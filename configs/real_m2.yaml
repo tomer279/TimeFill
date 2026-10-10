@@ -1,0 +1,87 @@
+# Milestone 2 real-data hyperparameters (WP2 paths/normalize + WP3 train).
+# Tensor contract: x, m shaped (B, T, F); m: 1=observed, 0=missing;
+# missing cells in x use sentinel 0.0 (see ASSUMPTIONS.md).
+# Evaluation contract: docs/EVAL.md
+#
+# Prepare:  python scripts/prepare_m2_data.py --config configs/real_m2.yaml
+# Train (WP3): python scripts/train_m2_real.py --config configs/real_m2.yaml
+# CPU smoke example:
+#   python scripts/train_m2_real.py --config configs/real_m2.yaml \
+#     --epochs 2 --steps-per-epoch 2 --batch-size 2 \
+#     --snapshot-k 2 --snapshot-steps 10
+# Impute (WP4):
+#   python scripts/run_m2_impute_val.py --config configs/real_m2.yaml \
+#     --ckpt artifacts/m2/checkpoints/best_score_net.eqx
+#
+# Artifacts (train.artifact_dir):
+#   artifacts/m2/checkpoints/best_score_net.eqx
+#   artifacts/m2/checkpoints/feature_scaler.npz   # WP2 FeatureScaler
+#   artifacts/m2/loss_curves.csv | .png
+#   artifacts/m2/val_snapshots/
+#   artifacts/m2/imputation_mean_bands.png        # WP4
+#   artifacts/m2/val_metrics.json | .csv          # WP4 (original units)
+#
+# Metrics (WP4+): report MAE/RMSE/CRPS in original units after
+# FeatureScaler.inverse_transform; DSM train stays in normalized space.
+
+data:
+  dataset_name: beijing_multisite_air_quality
+  raw_dir: data/raw/beijing_multisite
+  processed_dir: data/processed/m2
+  raw_glob: "*.csv"
+  seq_len: 64
+  # Non-overlapping windows (stride == seq_len) for split non-leakage.
+  stride: 64
+  n_features: 6
+  feature_names:
+    - PM2.5
+    - PM10
+    - SO2
+    - NO2
+    - CO
+    - O3
+  # Artificial MCAR rate on originally observed cells; compose with m_native.
+  mask_rate: 0.2
+  block_len: 8
+  batch_size: 8
+  # Entity-aware preferred; prepare script CLI can override.
+  split_mode: entity
+  split_seed: 0
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+  # Persisted beside checkpoints via resolve_scaler_path(...).
+  scaler_filename: feature_scaler.npz
+
+sde:
+  beta_min: 0.1
+  beta_max: 20.0
+  T_diff: 1.0
+
+train:
+  lr: 0.0003
+  # CPU-friendly defaults below; raise epochs / steps_per_epoch for longer runs.
+  epochs: 100
+  weight_decay: 0.0001
+  seed: 0
+  t_eps: 1.0e-5
+  # Observed cells: zero loss (masked/target only). See ASSUMPTIONS.md.
+  obs_loss_weight: 0.0
+  steps_per_epoch: 200
+  val_every: 5
+  log_every: 1
+  grad_clip_norm: 1.0
+  # random | block | mixed
+  mask_mode: random
+  artifact_dir: artifacts/m2
+  # Lightweight val reverse-impute snapshots during training (WP3).
+  # Full sample.K_samples / solver_steps remain for WP4 val impute script.
+  snapshot_k_samples: 4
+  snapshot_solver_steps: 20
+  # Optional post-train mask-rate smoke; null disables.
+  # Example: [0.1, 0.3, 0.5]  or CLI --sensitivity-smoke
+  sensitivity_mask_rates: null
+
+sample:
+  K_samples: 50
+  solver_steps: 100

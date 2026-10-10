@@ -257,6 +257,7 @@ def save_mask_patterns_plot(
 def save_imputation_bands(
         data: ImputationPlotData,
         output_path: Path | str,
+        title: str = "M1 imputation mean ± bands",
 ) -> Path:
     """Save truth / observations / posterior mean ± quantile bands.
 
@@ -266,6 +267,8 @@ def save_imputation_bands(
         Batched imputation tensors.
     output_path : path-like
         Destination PNG (parent dirs are created).
+    title : str, optional
+        Axes title (M2 passes an original-units label).
 
     Returns
     -------
@@ -314,7 +317,7 @@ def save_imputation_bands(
         )
     axis.set_xlabel("t")
     axis.set_ylabel("value")
-    axis.set_title("M1 imputation mean ± bands")
+    axis.set_title(title)
     axis.legend(loc="best", fontsize=8)
     fig.tight_layout()
     save_figure(fig, out)

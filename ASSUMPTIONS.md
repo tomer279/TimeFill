@@ -116,3 +116,93 @@ inside M1.
 - PhysioNet / real CSV loaders
 - Streamlit app
 - LOCF / linear baseline comparison tables
+
+---
+
+# Milestone 2 Assumptions
+
+This section extends M1 for real-data training. M1 contracts above remain in
+force unless an item below explicitly overrides them for the M2 path.
+
+## Primary dataset and features
+
+- **Primary dataset:** UCI Beijing Multi-Site Air-Quality (see `docs/EVAL.md`).
+- Feature count **`F = 6`**: `PM2.5`, `PM10`, `SO2`, `NO2`, `CO`, `O3`.
+- Optional entity field: monitoring **site id** for entity-aware splits.
+- PhysioNet ICU-style data is **not** required for the M2 exit criterion.
+
+## Windowing after resample / binning
+
+- Raw rows may be irregular or gappy in wall-clock time.
+- **Resample / bin** onto a regular hourly (or config-chosen) grid before
+  windowing: last-value-in-bin when present; empty bin → native missing
+  (`m_native = 0`, value sentinel `0.0`).
+- After resampling, series are **fixed-length windows** on that regular grid
+  with default **`T = seq_len = 64`** (same default as M1 unless
+  `configs/real_m2.yaml` overrides).
+- Batch layout remains **`(B, T, F)`** for values and masks.
+- Grid indices `0 … T-1` may be passed as `timestamps` to the imputer; they are
+  not used as first-class irregular SDE dynamics in M2.
+
+## Mask composition
+
+- **`m_native`:** observed vs missing from the source after resampling.
+- **`m_artificial`:** MCAR or contiguous-block masks from M1 APIs, applied only
+  where `m_native == 1`.
+- **Training / eval mask:** `m_train = m_native * m_artificial` (elementwise).
+  Only originally observed cells can be held out as targets.
+- Mask convention unchanged: `1` = observed, `0` = missing; `float32`.
+- Missing cells in `x` remain sentinel **`0.0`**; never infer missingness from
+  nonzero values in `x`.
+
+## Normalization
+
+- Per-feature standardization (or robust scaling) is fit on **train-split
+  observed cells only** (`m_native == 1` within train windows).
+- Val / test use train statistics; scaler stats are stored with checkpoints under
+  `artifacts/m2/`.
+- **WP2 path:** `artifacts/m2/checkpoints/feature_scaler.npz`
+  (same directory as `best_score_net.eqx`; see `src/data/normalize.py`).
+- DSM / SDE training runs in normalized space; reported MAE/RMSE prefer
+  original units after inverse transform (`docs/EVAL.md`).
+- Missing cells stay sentinel `0.0` under transform / inverse_transform and
+  never enter fit statistics.
+
+## Loss and model reuse
+
+- DSM remains primarily on target cells (`m == 0`); `train.obs_loss_weight`
+  default **`0.0`** unless deliberately enabled and documented.
+- **M2 weighting detail:** DSM reduction uses
+  `artificial_target_mask` (natively observed ∧ artificially missing).
+  Natively missing cells are **not** scored even though `m_train == 0`
+  there (no ground truth).
+- Reuse M1 **VP-SDE** and Diffrax **reverse imputer** APIs; adapt `F` and
+  normalization only.
+
+## Artifacts
+
+- M2 artifact root: **`artifacts/m2/`**
+  - `checkpoints/`
+  - `loss_curves.csv` / `loss_curves.png`
+  - `val_snapshots/`
+- WP4 val impute (from checkpoint alone):
+  - `imputation_mean_bands.png` — mean ± bands in **original units**
+  - `val_metrics.json` / `val_metrics.csv` — MAE / RMSE / CRPS /
+    coverage_50 / coverage_90 on **artificial targets with GT** only
+- Large raw / processed data live under `data/raw/` and `data/processed/` and
+  are gitignored.
+
+## Irregular time (status)
+
+- **Deferred:** irregular wall-clock as first-class SDE dynamics is **not**
+  promoted in M2.
+- Irregularity is handled only via resample / bin → regular windows + masks.
+- Do not advertise irregular-time dynamics as a completed M2 differentiator.
+
+## Out of scope for M2
+
+- LOCF / linear / CSDI baseline tables (**M3**)
+- Streamlit app (**M4**)
+- Portfolio polish / full README rewrite beyond an M2 runbook (**M5**)
+- Breaking or regressing the M1 toy path (`configs/toy_m1.yaml`,
+  `scripts/run_m1_toy.py`)

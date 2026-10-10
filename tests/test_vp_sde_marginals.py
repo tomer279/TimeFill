@@ -55,7 +55,7 @@ def test_marginal_variance_near_one_at_horizon(
         clean_batch: jnp.ndarray,
 ) -> None:
     """At ``t = T_diff``, VP marginal variance is ≈ 1."""
-    mean, std = vp_sde.marginal_prob(clean_batch, vp_sde.T_diff)
+    mean, std = vp_sde.marginal_prob(clean_batch, vp_sde.t_diff)
     variance = std ** 2
     assert std.shape == clean_batch.shape
     assert bool(jnp.allclose(variance, 1.0, atol=_VAR_AT_T_TOL))
@@ -69,7 +69,7 @@ def test_marginal_broadcasts_over_btf(
         clean_batch: jnp.ndarray,
 ) -> None:
     """Scalar ``t`` broadcasts over ``(B, T, F)`` outputs."""
-    mean, std = vp_sde.marginal_prob(clean_batch, 0.5 * vp_sde.T_diff)
+    mean, std = vp_sde.marginal_prob(clean_batch, 0.5 * vp_sde.t_diff)
     assert mean.shape == (_BATCH_SIZE, _SEQ_LEN, _N_FEATURES)
     assert std.shape == (_BATCH_SIZE, _SEQ_LEN, _N_FEATURES)
 
@@ -79,7 +79,7 @@ def test_forward_sample_matches_marginal(
         clean_batch: jnp.ndarray,
 ) -> None:
     """``forward_sample`` equals ``mean + std * eps``."""
-    time = 0.3 * vp_sde.T_diff
+    time = 0.3 * vp_sde.t_diff
     eps = jax.random.normal(
         jax.random.PRNGKey(_SEED + 1),
         shape=clean_batch.shape,
@@ -95,7 +95,7 @@ def test_sde_coefficients_and_reverse_drift_shapes(
         clean_batch: jnp.ndarray,
 ) -> None:
     """Coefficient helpers and reverse-drift stub are shape-safe."""
-    time = 0.7 * vp_sde.T_diff
+    time = 0.7 * vp_sde.t_diff
     drift_coeff, diffusion = vp_sde.sde_coefficients(time)
     assert drift_coeff.shape == ()
     assert diffusion.shape == ()

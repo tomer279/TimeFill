@@ -20,8 +20,6 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from src.data.schema import FEATURE_AXIS
-
 _SHAPE_BATCH = 0
 _SHAPE_TIME = 1
 _SHAPE_FEATURES = 2

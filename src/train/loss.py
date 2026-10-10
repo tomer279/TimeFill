@@ -37,6 +37,59 @@ _MASK_COMPARE_TOL = 0.5
 
 
 @dataclass(frozen=True)
+class _DsmKeyPack:
+    """PRNG keys for mask / time / noise in one DSM step.
+
+    Public methods
+    --------------
+    as_tuple
+        Return ``(mask, time, eps)`` keys in that order.
+    split_from
+        Build a pack by splitting a root key into three streams.
+
+    Instance variables
+    ------------------
+    mask : jax.Array
+        Key for self-supervised mask sampling.
+    time : jax.Array
+        Key for diffusion-time sampling.
+    eps : jax.Array
+        Key for Gaussian forward noise.
+    """
+
+    mask: jax.Array
+    time: jax.Array
+    eps: jax.Array
+
+    def as_tuple(self) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return the three keys as a tuple.
+
+        Returns
+        -------
+        tuple of jax.Array
+            ``(mask, time, eps)``.
+        """
+        return self.mask, self.time, self.eps
+
+    @staticmethod
+    def split_from(key: jax.Array) -> "_DsmKeyPack":
+        """Split a root PRNG key into mask / time / eps streams.
+
+        Parameters
+        ----------
+        key : jax.Array
+            Root PRNG key for one DSM evaluation.
+
+        Returns
+        -------
+        _DsmKeyPack
+            Packed sub-keys.
+        """
+        key_mask, key_time, key_eps = jax.random.split(key, 3)
+        return _DsmKeyPack(mask=key_mask, time=key_time, eps=key_eps)
+
+
+@dataclass(frozen=True)
 class DSMLossSettings:
     """Settings for conditional continuous DSM.
 
@@ -160,10 +213,10 @@ class ConditionalDSMLoss:
             Mask rate/mode, ``t_eps``, and observed-cell weight.
         """
         settings.validate()
-        if settings.t_eps >= sde.T_diff:
+        if settings.t_eps >= sde.t_diff:
             raise ValueError(
                 "t_eps must be < T_diff, "
-                f"got t_eps={settings.t_eps}, T_diff={sde.T_diff}"
+                f"got t_eps={settings.t_eps}, T_diff={sde.t_diff}"
             )
         self.sde = sde
         self.settings = settings
@@ -190,11 +243,13 @@ class ConditionalDSMLoss:
         jax.Array
             Scalar mean weighted squared score error.
         """
-        key_mask, key_time, key_eps = jax.random.split(key, 3)
-        x_obs, mask = self.sample_mask(key_mask, x0)
-        batch_size = int(x0.shape[BATCH_AXIS])
-        time = self._sample_time(key_time, batch_size)
-        eps = jax.random.normal(key_eps, x0.shape, dtype=jnp.float32)
+        keys = _DsmKeyPack.split_from(key)
+        x_obs, mask = self.sample_mask(keys.mask, x0)
+        time = self._sample_time(
+            keys.time,
+            int(x0.shape[BATCH_AXIS]),
+        )
+        eps = jax.random.normal(keys.eps, x0.shape, dtype=jnp.float32)
         y_t = self.sde.forward_sample(x0, time, eps)
         pred = model(y_t, time, mask, x_obs)
         target = self.score_target(eps, x0, time)
@@ -314,7 +369,7 @@ class ConditionalDSMLoss:
             Times shaped ``(B,)``.
         """
         u_rand = jax.random.uniform(key, shape=(batch_size,))
-        span = self.sde.T_diff - self.settings.t_eps
+        span = self.sde.t_diff - self.settings.t_eps
         return self.settings.t_eps + span * u_rand
 
 
@@ -334,9 +389,9 @@ def dsm_settings_from_config(config: ToyM1Config) -> DSMLossSettings:
     settings = DSMLossSettings(
         mask_rate=config.data.mask_rate,
         block_len=config.data.block_len,
-        t_eps=config.train.t_eps,
-        obs_loss_weight=config.train.obs_loss_weight,
-        mask_mode=config.train.mask_mode,
+        t_eps=config.train.protocol.t_eps,
+        obs_loss_weight=config.train.protocol.obs_loss_weight,
+        mask_mode=config.train.protocol.mask_mode,
     )
     settings.validate()
     return settings

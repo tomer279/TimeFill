@@ -33,15 +33,15 @@ def test_load_config_has_required_keys() -> None:
 
     assert config.sde.beta_min == pytest.approx(0.1)
     assert config.sde.beta_max == pytest.approx(20.0)
-    assert config.sde.T_diff == pytest.approx(1.0)
+    assert config.sde.t_diff == pytest.approx(1.0)
 
-    assert config.train.lr == pytest.approx(0.001)
-    assert config.train.epochs == 40
-    assert config.train.obs_loss_weight == pytest.approx(0.0)
-    assert config.train.mask_mode == "mixed"
-    assert config.train.artifact_dir == "artifacts/m1"
+    assert config.train.optimizer.lr == pytest.approx(0.001)
+    assert config.train.schedule.epochs == 40
+    assert config.train.protocol.obs_loss_weight == pytest.approx(0.0)
+    assert config.train.protocol.mask_mode == "mixed"
+    assert config.train.protocol.artifact_dir == "artifacts/m1"
 
-    assert config.sample.K_samples == 50
+    assert config.sample.k_samples == 50
     assert config.sample.solver_steps == 100
 
 

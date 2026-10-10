@@ -44,6 +44,16 @@ lightning_logs/
 runs/
 mlruns/
 
+# Local datasets (do not commit large raw / processed dumps)
+data/raw/
+data/processed/
+# Accidental UCI / PRSA archives dropped at repo root
+/*.zip
+/PRSA*.zip
+# Belt-and-suspenders if arrays / scalers are written outside the dirs above
+**/windows.npz
+**/feature_scaler.npz
+
 # Environment / secrets
 .env
 .env.*
@@ -63,3 +73,9 @@ mlruns/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Microsoft Office lock / temp files
+~$*
+*.tmp
+*.docx
+~$*.docx

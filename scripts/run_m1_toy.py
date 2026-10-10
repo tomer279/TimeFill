@@ -38,18 +38,21 @@ from src.models.score_net import (
     default_score_net_config,
 )
 from src.sample.reverse_sde import (
+    ImputeQuery,
     ReverseSDEImputer,
     context_from_toy_config,
     grid_timestamps,
 )
 from src.sde.vp_sde import VPSDE
 from src.train.loss import ConditionalDSMLoss, dsm_settings_from_config
+from src.train.artifacts import (
+    resolve_artifact_paths,
+    stub_val_imputation_hook,
+)
 from src.train.loop import (
     M1Trainer,
     TrainerBundle,
     build_optimizer,
-    resolve_artifact_paths,
-    stub_val_imputation_hook,
 )
 
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "toy_m1.yaml"
@@ -127,7 +130,7 @@ class M1ToyRunner:
         """
         config.validate()
         self.config = config
-        self.paths = resolve_artifact_paths(config.train.artifact_dir)
+        self.paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
         self.plot_paths = EvalPlotPaths(self.paths.root)
 
     def run(self, key: jax.Array) -> dict[str, float]:
@@ -242,11 +245,13 @@ class M1ToyRunner:
             context_from_toy_config(model, self.config)
         )
         samples, mean, quantiles = imputer.impute(
-            observations,
-            mask,
-            grid_timestamps(self.config.data.seq_len),
-            key_impute,
-            self.config.sample.K_samples,
+            ImputeQuery(
+                observations=observations,
+                mask=mask,
+                timestamps=grid_timestamps(self.config.data.seq_len),
+                key=key_impute,
+                k_samples=self.config.sample.k_samples,
+            )
         )
         save_imputation_bands(
             ImputationPlotData(
@@ -343,9 +348,9 @@ def apply_cli_overrides(
         The same config instance after overrides + re-validation.
     """
     if args.epochs is not None:
-        config.train.epochs = int(args.epochs)
+        config.train.schedule.epochs = int(args.epochs)
     if args.k_samples is not None:
-        config.sample.K_samples = int(args.k_samples)
+        config.sample.k_samples = int(args.k_samples)
     if args.solver_steps is not None:
         config.sample.solver_steps = int(args.solver_steps)
     config.validate()
@@ -367,7 +372,7 @@ def main(argv: list[str] | None = None) -> dict[str, float]:
     """
     args = parse_args(argv)
     config = apply_cli_overrides(load_config(args.config), args)
-    key = jax.random.PRNGKey(config.train.seed)
+    key = jax.random.PRNGKey(config.train.protocol.seed)
     return M1ToyRunner(config).run(key)
 
 

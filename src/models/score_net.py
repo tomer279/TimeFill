@@ -84,10 +84,13 @@ class ScoreNetConfig:
     n_index_frequencies: int = _DEFAULT_INDEX_FREQS
 
     def validate(self) -> None:
-        """Raise ``ValueError`` if hyperparameters violate M1 constraints."""
-        if self.n_features not in (1, 2, 3):
+        """Raise ``ValueError`` if hyperparameters are invalid.
+
+        M1 toy path uses ``F in {1, 2, 3}``; M2 real path uses ``F = 6``.
+        """
+        if self.n_features <= 0:
             raise ValueError(
-                "n_features must be in {1, 2, 3}, "
+                "n_features must be positive, "
                 f"got {self.n_features}"
             )
         if self.hidden_channels <= 0:
@@ -401,12 +404,12 @@ class ConditionalScoreNet(eqx.Module):
 
 
 def default_score_net_config(n_features: int) -> ScoreNetConfig:
-    """Build default M1 score-net hyperparameters for feature count ``F``.
+    """Build default score-net hyperparameters for feature count ``F``.
 
     Parameters
     ----------
     n_features : int
-        Number of data channels ``F`` in ``{1, 2, 3}``.
+        Number of data channels ``F`` (M1: ``{1,2,3}``; M2: ``6``).
 
     Returns
     -------

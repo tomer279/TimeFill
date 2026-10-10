@@ -42,7 +42,7 @@ def score_batch(toy_cfg):
     x0 = generate_sine_windows(key_data, shape)
     x_obs, mask = random_mask(x0, data_cfg.mask_rate, key_mask)
     vp_sde = VPSDE(toy_cfg.sde)
-    time = _DIFFUSION_TIME_FRAC * vp_sde.T_diff
+    time = _DIFFUSION_TIME_FRAC * vp_sde.t_diff
     eps = jax.random.normal(key_eps, shape=x0.shape, dtype=jnp.float32)
     y_t = vp_sde.forward_sample(x0, time, eps)
     return y_t, time, mask, x_obs

@@ -1,13 +1,7 @@
-"""Jitted Optax training loop, checkpoints, and logging for M1 (WP4).
+"""Jitted Optax training loop for M1 conditional DSM (WP4).
 
 Classes
 -------
-ArtifactPaths
-    Resolve checkpoint / curve / val-snapshot paths under artifacts.
-TrainHistory
-    Collect epoch metrics and export CSV / Matplotlib curves.
-ValSnapshotPayload
-    Packed inputs for the periodic val snapshot hook.
 TrainerBundle
     Dependencies for ``M1Trainer`` (keeps constructor arity small).
 M1Trainer
@@ -17,21 +11,12 @@ Functions
 ---------
 build_optimizer
     Build Optax AdamW (+ optional grad clip) from ``TrainConfig``.
-save_checkpoint
-    Serialize an Equinox model with ``eqx.tree_serialise_leaves``.
-load_checkpoint
-    Deserialize into a like-shaped Equinox template.
-resolve_artifact_paths
-    Build ``ArtifactPaths`` from a config ``artifact_dir`` string.
-stub_val_imputation_hook
-    WP5 stub: write a val snapshot marker (no reverse SDE).
 run_m1_training
     Load config, train on sine windows, write artifacts.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -39,7 +24,6 @@ from typing import Any, Callable, Mapping
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import optax
 
 from src.data.config import ToyM1Config, TrainConfig, load_config
@@ -48,262 +32,23 @@ from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
 )
-from src.plot_io import save_figure
 from src.sde.vp_sde import VPSDE
+from src.train.artifacts import (
+    ArtifactPaths,
+    TrainHistory,
+    ValSnapshotPayload,
+    resolve_artifact_paths,
+    save_checkpoint,
+    stub_val_imputation_hook,
+)
 from src.train.loss import (
     ConditionalDSMLoss,
     dsm_settings_from_config,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_BEST_CKPT_NAME = "best_score_net.eqx"
-_LOSS_CSV_NAME = "loss_curves.csv"
-_LOSS_PNG_NAME = "loss_curves.png"
-_VAL_SUBDIR = "val_snapshots"
-_CKPT_SUBDIR = "checkpoints"
 _NAN_MSG = "non-finite train loss detected; aborting"
 _GRAD_NORM_EPS = 0.0
 _VAL_MC_DRAWS = 4
-
-
-@dataclass(frozen=True)
-class ArtifactPaths:
-    """Filesystem layout for M1 training artifacts.
-
-    Public methods
-    --------------
-    ensure
-        Create checkpoint and val-snapshot directories.
-    checkpoint_dir
-        Return ``<root>/checkpoints``.
-    best_checkpoint
-        Return path to the best-val score-net file.
-    loss_csv
-        Return path to the loss-history CSV.
-    loss_png
-        Return path to the loss-curve PNG.
-    val_dir
-        Return ``<root>/val_snapshots``.
-
-    Instance variables
-    ------------------
-    root : pathlib.Path
-        Artifact root (typically ``artifacts/m1``).
-    """
-
-    root: Path
-
-    def ensure(self) -> None:
-        """Create checkpoint and validation snapshot directories."""
-        self.checkpoint_dir().mkdir(parents=True, exist_ok=True)
-        self.val_dir().mkdir(parents=True, exist_ok=True)
-
-    def checkpoint_dir(self) -> Path:
-        """Return the checkpoint directory path.
-
-        Returns
-        -------
-        pathlib.Path
-            ``root / checkpoints``.
-        """
-        return self.root / _CKPT_SUBDIR
-
-    def best_checkpoint(self) -> Path:
-        """Return the best-validation checkpoint path.
-
-        Returns
-        -------
-        pathlib.Path
-            ``.../checkpoints/best_score_net.eqx``.
-        """
-        return self.checkpoint_dir() / _BEST_CKPT_NAME
-
-    def loss_csv(self) -> Path:
-        """Return the loss-history CSV path.
-
-        Returns
-        -------
-        pathlib.Path
-            ``root / loss_curves.csv``.
-        """
-        return self.root / _LOSS_CSV_NAME
-
-    def loss_png(self) -> Path:
-        """Return the loss-curve plot path.
-
-        Returns
-        -------
-        pathlib.Path
-            ``root / loss_curves.png``.
-        """
-        return self.root / _LOSS_PNG_NAME
-
-    def val_dir(self) -> Path:
-        """Return the validation snapshot directory.
-
-        Returns
-        -------
-        pathlib.Path
-            ``root / val_snapshots``.
-        """
-        return self.root / _VAL_SUBDIR
-
-
-class TrainHistory:
-    """In-memory table of per-epoch training metrics.
-
-    Public methods
-    --------------
-    append_row
-        Append one metric mapping.
-    save_csv
-        Write all rows to a CSV file.
-    save_plot
-        Save train/val loss curves with Matplotlib.
-
-    Instance variables
-    ------------------
-    rows : list of dict
-        Metric rows with keys such as ``epoch``, ``train_loss``.
-    """
-
-    def __init__(self) -> None:
-        """Initialize an empty metric table."""
-        self.rows: list[dict[str, Any]] = []
-
-    def append_row(self, row: Mapping[str, Any]) -> None:
-        """Append a metric row.
-
-        Parameters
-        ----------
-        row : Mapping[str, Any]
-            Metric name to scalar / string value.
-        """
-        self.rows.append(dict(row))
-
-    def save_csv(self, path: Path) -> None:
-        """Write the history to CSV.
-
-        Parameters
-        ----------
-        path : pathlib.Path
-            Destination CSV path.
-        """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.rows:
-            path.write_text("", encoding="utf-8")
-            return
-        fieldnames = list(self.rows[0].keys())
-        with path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(self.rows)
-
-    def save_plot(self, path: Path) -> None:
-        """Plot train/val loss versus epoch.
-
-        Parameters
-        ----------
-        path : pathlib.Path
-            Destination PNG path.
-        """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.rows:
-            return
-        epochs = [int(row["epoch"]) for row in self.rows]
-        train_y = [float(row["train_loss"]) for row in self.rows]
-        val_y = [float(row["val_loss"]) for row in self.rows]
-        fig, axis = plt.subplots(figsize=(6, 4))
-        axis.plot(epochs, train_y, label="train")
-        axis.plot(epochs, val_y, label="val")
-        axis.set_xlabel("epoch")
-        axis.set_ylabel("DSM loss")
-        axis.set_title("M1 conditional DSM")
-        axis.legend()
-        fig.tight_layout()
-        save_figure(fig, path)
-        plt.close(fig)
-
-
-@dataclass(frozen=True)
-class ValSnapshotPayload:
-    """Inputs for the periodic validation snapshot hook.
-
-    Public methods
-    --------------
-    marker_path
-        Path for the WP5 stub marker at this step.
-    summary_line
-        One-line human-readable summary for the stub file.
-
-    Instance variables
-    ------------------
-    model : ConditionalScoreNet
-        Current score network (unused by the WP5 stub).
-    x0 : jax.Array
-        Clean validation windows.
-    mask : jax.Array
-        Validation observation mask.
-    x_obs : jax.Array
-        Sentinel-filled observations.
-    step : int
-        Epoch index used as the snapshot label.
-    out_dir : pathlib.Path
-        Directory for snapshot artifacts.
-    """
-
-    model: ConditionalScoreNet
-    x0: jnp.ndarray
-    mask: jnp.ndarray
-    x_obs: jnp.ndarray
-    step: int
-    out_dir: Path
-
-    def marker_path(self) -> Path:
-        """Return the stub marker path for this step.
-
-        Returns
-        -------
-        pathlib.Path
-            ``out_dir / val_stub_step_{step}.txt``.
-        """
-        return self.out_dir / f"val_stub_step_{self.step}.txt"
-
-    def summary_line(self) -> str:
-        """Build a short stub summary string.
-
-        Returns
-        -------
-        str
-            Shape summary noting that WP5 impute is not wired yet.
-        """
-        return (
-            f"step={self.step} x0_shape={tuple(self.x0.shape)} "
-            f"mask_shape={tuple(self.mask.shape)} "
-            "WP5 reverse impute not implemented; stub only"
-        )
-
-
-def stub_val_imputation_hook(payload: ValSnapshotPayload) -> Path:
-    """Write a WP5-pending validation snapshot marker.
-
-    Does **not** run Diffrax reverse sampling. WP5 should replace this
-    hook with a real imputation mean ± band figure.
-
-    Parameters
-    ----------
-    payload : ValSnapshotPayload
-        Model, val tensors, step, and output directory.
-
-    Returns
-    -------
-    pathlib.Path
-        Path to the written stub marker file.
-    """
-    payload.out_dir.mkdir(parents=True, exist_ok=True)
-    path = payload.marker_path()
-    path.write_text(payload.summary_line() + "\n", encoding="utf-8")
-    return path
 
 
 @dataclass(frozen=True)
@@ -368,6 +113,8 @@ class _EpochKeyPack:
         Number of mini-batch updates in this pack.
     data_key_at
         Data PRNG key for a given step index.
+    step_key_at
+        Train-step PRNG key for a given step index.
 
     Instance variables
     ------------------
@@ -380,8 +127,8 @@ class _EpochKeyPack:
     """
 
     key_val: jax.Array
-    step_keys: jax.Array
-    data_keys: jax.Array
+    step_keys: jnp.ndarray
+    data_keys: jnp.ndarray
 
     def n_train_steps(self) -> int:
         """Return the number of train steps in this pack.
@@ -406,7 +153,152 @@ class _EpochKeyPack:
         jax.Array
             PRNG key for sine batch generation.
         """
-        return self.data_keys[step_idx]
+        return jnp.asarray(self.data_keys)[step_idx]
+
+    def step_key_at(self, step_idx: int) -> jax.Array:
+        """Return the train-step key at ``step_idx``.
+
+        Parameters
+        ----------
+        step_idx : int
+            Mini-batch index.
+
+        Returns
+        -------
+        jax.Array
+            PRNG key for the jitted train step.
+        """
+        return jnp.asarray(self.step_keys)[step_idx]
+
+
+@dataclass
+class _BestModelTracker:
+    """Best-val checkpoint tracker and epoch history.
+
+    Public methods
+    --------------
+    append_row
+        Append one epoch metrics row to ``history``.
+    consider
+        Update best model when validation loss improves.
+
+    Instance variables
+    ------------------
+    history : TrainHistory
+        Epoch metric log.
+    best_val : float
+        Best validation loss so far.
+    best_model : ConditionalScoreNet
+        Model weights at ``best_val``.
+    """
+
+    history: TrainHistory
+    best_val: float
+    best_model: ConditionalScoreNet
+
+    def append_row(self, row: Mapping[str, Any]) -> None:
+        """Append one epoch metrics row.
+
+        Parameters
+        ----------
+        row : mapping of str to Any
+            Epoch metrics for CSV / plotting.
+        """
+        self.history.append_row(row)
+
+    def consider(self, model: ConditionalScoreNet, val_loss: float) -> bool:
+        """Keep ``model`` if ``val_loss`` improves on ``best_val``.
+
+        Parameters
+        ----------
+        model : ConditionalScoreNet
+            Candidate score network.
+        val_loss : float
+            Validation DSM loss for this epoch.
+
+        Returns
+        -------
+        bool
+            ``True`` if this candidate became the new best.
+        """
+        improved = val_loss < self.best_val
+        if improved:
+            self.best_val = val_loss
+            self.best_model = model
+        return improved
+
+
+@dataclass
+class _TrainLoopState:
+    """Mutable state carried across M1 training epochs.
+
+    Public methods
+    --------------
+    take_epoch_key
+        Split and return the next epoch PRNG key.
+    update_after_epoch
+        Store model/opt state, append history, track best val.
+
+    Instance variables
+    ------------------
+    model : ConditionalScoreNet
+        Current score network.
+    opt_state : optax.OptState
+        Current Optax optimizer state.
+    key_loop : jax.Array
+        PRNG stream for epoch key splits.
+    val_x0 : jax.Array
+        Fixed clean validation batch.
+    tracker : _BestModelTracker
+        History and best-val bookkeeping.
+    step_fn : callable
+        Jitted train step.
+    """
+
+    model: ConditionalScoreNet
+    opt_state: optax.OptState
+    key_loop: jax.Array
+    val_x0: jnp.ndarray
+    tracker: _BestModelTracker
+    step_fn: Callable
+
+    def take_epoch_key(self) -> jax.Array:
+        """Split ``key_loop`` and return the next epoch key.
+
+        Returns
+        -------
+        jax.Array
+            PRNG key for the upcoming epoch.
+        """
+        self.key_loop, key_epoch = jax.random.split(self.key_loop)
+        return key_epoch
+
+    def update_after_epoch(
+            self,
+            model: ConditionalScoreNet,
+            opt_state: optax.OptState,
+            row: Mapping[str, Any],
+    ) -> bool:
+        """Apply one epoch's outputs to this loop state.
+
+        Parameters
+        ----------
+        model : ConditionalScoreNet
+            Updated score network.
+        opt_state : optax.OptState
+            Updated optimizer state.
+        row : mapping of str to Any
+            Epoch metrics including ``val_loss``.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``val_loss`` improved on the tracked best.
+        """
+        self.model = model
+        self.opt_state = opt_state
+        self.tracker.append_row(row)
+        return self.tracker.consider(model, float(row["val_loss"]))
 
 
 @dataclass(frozen=True)
@@ -453,7 +345,7 @@ class _EpochInputs:
         int
             ``steps_per_epoch``.
         """
-        return int(train_cfg.steps_per_epoch)
+        return int(train_cfg.schedule.steps_per_epoch)
 
     def split_keys(self, n_steps: int) -> _EpochKeyPack:
         """Split into val / step / data keys.
@@ -533,39 +425,58 @@ class M1Trainer:
             Logged train/val metrics.
         """
         self.paths.ensure()
-        train_cfg = self.config.train
-        key, key_val, key_loop = jax.random.split(key, 3)
-        val_x0 = _make_sine_batch(key_val, self.config.data)
-        opt_state = self.optimizer.init(eqx.filter(self.model, eqx.is_array))
-        step_fn = _build_train_step(self.optimizer, self.loss_fn)
-        history = TrainHistory()
-        best_val = float("inf")
-        best_model = self.model
-        model = self.model
-
-        for epoch in range(1, train_cfg.epochs + 1):
-            key_loop, key_epoch = jax.random.split(key_loop)
+        state = self._init_loop_state(key)
+        schedule = self.config.train.schedule
+        for epoch in range(1, schedule.epochs + 1):
             epoch_in = _EpochInputs(
-                model,
-                opt_state,
-                key_epoch,
-                val_x0,
+                state.model,
+                state.opt_state,
+                state.take_epoch_key(),
+                state.val_x0,
                 epoch,
             )
-            model, opt_state, row = self._run_epoch(step_fn, epoch_in)
-            history.append_row(row)
-            val_loss = float(row["val_loss"])
-            if val_loss < best_val:
-                best_val = val_loss
-                best_model = model
-                save_checkpoint(self.paths.best_checkpoint(), best_model)
-            if epoch % train_cfg.val_every == 0:
-                self._fire_val_hook(model, val_x0, epoch)
+            model, opt_state, row = self._run_epoch(state.step_fn, epoch_in)
+            if state.update_after_epoch(model, opt_state, row):
+                save_checkpoint(
+                    self.paths.best_checkpoint(),
+                    state.tracker.best_model,
+                )
+            if epoch % schedule.val_every == 0:
+                self._fire_val_hook(state.model, state.val_x0, epoch)
 
-        history.save_csv(self.paths.loss_csv())
-        history.save_plot(self.paths.loss_png())
-        self.model = best_model
-        return best_model, history
+        state.tracker.history.save_csv(self.paths.loss_csv())
+        state.tracker.history.save_plot(self.paths.loss_png())
+        self.model = state.tracker.best_model
+        return state.tracker.best_model, state.tracker.history
+
+    def _init_loop_state(self, key: jax.Array) -> _TrainLoopState:
+        """Build initial mutable training-loop state.
+
+        Parameters
+        ----------
+        key : jax.Array
+            Root PRNG key.
+
+        Returns
+        -------
+        _TrainLoopState
+            Model, optimizer, val batch, history, and jitted step.
+        """
+        _, key_val, key_loop = jax.random.split(key, 3)
+        model = self.model
+        tracker = _BestModelTracker(
+            history=TrainHistory(),
+            best_val=float("inf"),
+            best_model=model,
+        )
+        return _TrainLoopState(
+            model=model,
+            opt_state=self.optimizer.init(eqx.filter(model, eqx.is_array)),
+            key_loop=key_loop,
+            val_x0=_make_sine_batch(key_val, self.config.data),
+            tracker=tracker,
+            step_fn=_build_train_step(self.optimizer, self.loss_fn),
+        )
 
     def evaluate(
             self,
@@ -635,7 +546,7 @@ class M1Trainer:
             "val_loss": val_loss,
             "grad_norm": grad_mean,
         }
-        if inputs.epoch % train_cfg.log_every == 0:
+        if inputs.epoch % train_cfg.schedule.log_every == 0:
             print(
                 f"epoch={inputs.epoch} train_loss={train_loss:.6f} "
                 f"val_loss={val_loss:.6f} grad_norm={grad_mean:.6f}"
@@ -684,7 +595,7 @@ class M1Trainer:
                 model,
                 opt_state,
                 x0,
-                key_pack.step_keys[step_idx],
+                key_pack.step_key_at(step_idx),
             )
             loss_host = float(loss)
             if not jnp.isfinite(loss):
@@ -730,7 +641,7 @@ def build_optimizer(train_cfg: TrainConfig) -> optax.GradientTransformation:
     Parameters
     ----------
     train_cfg : TrainConfig
-        Provides ``lr``, ``weight_decay``, and ``grad_clip_norm``.
+        Provides optimizer ``lr``, ``weight_decay``, and ``grad_clip_norm``.
 
     Returns
     -------
@@ -738,66 +649,15 @@ def build_optimizer(train_cfg: TrainConfig) -> optax.GradientTransformation:
         Optax optimizer chain.
     """
     adam = optax.adamw(
-        train_cfg.lr,
-        weight_decay=train_cfg.weight_decay,
+        train_cfg.optimizer.lr,
+        weight_decay=train_cfg.optimizer.weight_decay,
     )
-    if train_cfg.grad_clip_norm > _GRAD_NORM_EPS:
+    if train_cfg.optimizer.grad_clip_norm > _GRAD_NORM_EPS:
         return optax.chain(
-            optax.clip_by_global_norm(train_cfg.grad_clip_norm),
+            optax.clip_by_global_norm(train_cfg.optimizer.grad_clip_norm),
             adam,
         )
     return adam
-
-
-def save_checkpoint(path: Path, model: ConditionalScoreNet) -> None:
-    """Serialize an Equinox score network to ``path``.
-
-    Parameters
-    ----------
-    path : pathlib.Path
-        Destination file (``.eqx``).
-    model : ConditionalScoreNet
-        Model to serialize.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    eqx.tree_serialise_leaves(path, model)
-
-
-def load_checkpoint(
-        path: Path,
-        like: ConditionalScoreNet,
-) -> ConditionalScoreNet:
-    """Load a score network checkpoint into a template module.
-
-    Parameters
-    ----------
-    path : pathlib.Path
-        Checkpoint file written by ``save_checkpoint``.
-    like : ConditionalScoreNet
-        Template with the same architecture / static fields.
-
-    Returns
-    -------
-    ConditionalScoreNet
-        Restored module.
-    """
-    return eqx.tree_deserialise_leaves(path, like)
-
-
-def resolve_artifact_paths(artifact_dir: str) -> ArtifactPaths:
-    """Build ``ArtifactPaths`` from a config ``artifact_dir`` string.
-
-    Parameters
-    ----------
-    artifact_dir : str
-        Absolute or repo-relative artifact root.
-
-    Returns
-    -------
-    ArtifactPaths
-        Resolved paths helper.
-    """
-    return ArtifactPaths(_resolve_artifact_root(artifact_dir))
 
 
 def run_m1_training(config_path: Path | str) -> TrainHistory:
@@ -814,8 +674,8 @@ def run_m1_training(config_path: Path | str) -> TrainHistory:
         Logged metrics (CSV/PNG already written under artifact_dir).
     """
     config = load_config(config_path)
-    paths = resolve_artifact_paths(config.train.artifact_dir)
-    key = jax.random.PRNGKey(config.train.seed)
+    paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
+    key = jax.random.PRNGKey(config.train.protocol.seed)
     key_model, key_train = jax.random.split(key)
     model = ConditionalScoreNet(
         key_model,
@@ -929,22 +789,3 @@ def _make_sine_batch(key: jax.Array, data_cfg: Any) -> jnp.ndarray:
         data_cfg.n_features,
     )
     return generate_sine_windows(key, shape)
-
-
-def _resolve_artifact_root(artifact_dir: str) -> Path:
-    """Resolve artifact_dir relative to the repo root when needed.
-
-    Parameters
-    ----------
-    artifact_dir : str
-        Absolute path or repo-relative path string.
-
-    Returns
-    -------
-    pathlib.Path
-        Absolute artifact root.
-    """
-    path = Path(artifact_dir)
-    if path.is_absolute():
-        return path
-    return _REPO_ROOT / path

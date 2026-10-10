@@ -6,8 +6,14 @@ DataConfig
     Window, feature, and masking hyperparameters.
 SdeConfig
     VP-SDE beta schedule and diffusion horizon.
+TrainOptimizerConfig
+    Learning rate, weight decay, and grad clipping.
+TrainScheduleConfig
+    Epoch / step / logging schedule knobs.
+TrainProtocolConfig
+    Seed, DSM protocol, mask mode, and artifact root.
 TrainConfig
-    Optimizer / loop hyperparameters.
+    Nested optimizer / schedule / protocol train section.
 SampleConfig
     Reverse-SDE sampling hyperparameters.
 ToyM1Config
@@ -149,8 +155,8 @@ class SdeConfig:
         Lower end of linear `β(t)`.
     beta_max : float
         Upper end of linear `β(t)`.
-    T_diff : float
-        Diffusion time horizon.
+    t_diff : float
+        Diffusion time horizon (YAML key ``T_diff``).
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -164,7 +170,7 @@ class SdeConfig:
         _require_keys(mapping, _REQUIRED_SDE_KEYS, section="sde")
         self.beta_min = float(mapping["beta_min"])
         self.beta_max = float(mapping["beta_max"])
-        self.T_diff = float(mapping["T_diff"])
+        self.t_diff = float(mapping["T_diff"])
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -172,12 +178,12 @@ class SdeConfig:
         Returns
         -------
         dict of str to Any
-            Field name to value.
+            Field name to value (YAML key ``T_diff``).
         """
         return {
             "beta_min": self.beta_min,
             "beta_max": self.beta_max,
-            "T_diff": self.T_diff,
+            "T_diff": self.t_diff,
         }
 
     def validate(self) -> None:
@@ -189,84 +195,48 @@ class SdeConfig:
                 "beta_min must be < beta_max, "
                 f"got {self.beta_min} >= {self.beta_max}"
             )
-        if self.T_diff <= 0.0:
-            raise ValueError(f"T_diff must be positive, got {self.T_diff}")
+        if self.t_diff <= 0.0:
+            raise ValueError(f"t_diff must be positive, got {self.t_diff}")
 
 
-class TrainConfig:
-    """Train section: optimizer, DSM, and loop hyperparameters.
+class TrainOptimizerConfig:
+    """Optimizer knobs inside the flat YAML ``train`` section.
 
     Public methods
     --------------
     to_dict
         Serialize fields to a plain dict.
     validate
-        Check positivity / ranges for all train knobs.
+        Check positivity / ranges for optimizer knobs.
 
     Instance variables
     ------------------
     lr : float
         Optimizer learning rate.
-    epochs : int
-        Number of training epochs.
     weight_decay : float
         AdamW weight decay.
-    seed : int
-        PRNG seed for data / masks / training noise.
-    t_eps : float
-        Lower bound for Uniform diffusion-time sampling.
-    obs_loss_weight : float
-        Weight on observed cells in DSM (M1 default ``0.0`` = zero).
-    steps_per_epoch : int
-        Mini-batches drawn per epoch.
-    val_every : int
-        Validate / checkpoint every this many epochs.
-    log_every : int
-        Print train metrics every this many epochs.
     grad_clip_norm : float
         Global grad-norm clip; ``<= 0`` disables clipping.
-    mask_mode : str
-        ``random``, ``block``, or ``mixed`` self-supervised masks.
-    artifact_dir : str
-        Root directory for checkpoints and loss curves.
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
-        """Initialize from a mapping (typically the YAML `train` section).
+        """Initialize optimizer fields from a flat ``train`` mapping.
 
         Parameters
         ----------
         mapping : Mapping[str, Any]
-            Must contain `_REQUIRED_TRAIN_KEYS`.
+            Must contain ``lr``; other keys are optional with defaults.
         """
-        _require_keys(mapping, _REQUIRED_TRAIN_KEYS, section="train")
         self.lr = float(mapping["lr"])
-        self.epochs = int(mapping["epochs"])
         self.weight_decay = float(
             mapping.get("weight_decay", _DEFAULT_WEIGHT_DECAY)
         )
-        self.seed = int(mapping.get("seed", _DEFAULT_SEED))
-        self.t_eps = float(mapping.get("t_eps", _DEFAULT_T_EPS))
-        self.obs_loss_weight = float(
-            mapping.get("obs_loss_weight", _DEFAULT_OBS_LOSS_WEIGHT)
-        )
-        self.steps_per_epoch = int(
-            mapping.get("steps_per_epoch", _DEFAULT_STEPS_PER_EPOCH)
-        )
-        self.val_every = int(mapping.get("val_every", _DEFAULT_VAL_EVERY))
-        self.log_every = int(mapping.get("log_every", _DEFAULT_LOG_EVERY))
         self.grad_clip_norm = float(
             mapping.get("grad_clip_norm", _DEFAULT_GRAD_CLIP_NORM)
         )
-        self.mask_mode = str(
-            mapping.get("mask_mode", _DEFAULT_MASK_MODE)
-        ).lower()
-        self.artifact_dir = str(
-            mapping.get("artifact_dir", _DEFAULT_ARTIFACT_DIR)
-        )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON/YAML-serializable dict of fields.
+        """Return a JSON/YAML-serializable dict of optimizer fields.
 
         Returns
         -------
@@ -275,36 +245,76 @@ class TrainConfig:
         """
         return {
             "lr": self.lr,
-            "epochs": self.epochs,
             "weight_decay": self.weight_decay,
-            "seed": self.seed,
-            "t_eps": self.t_eps,
-            "obs_loss_weight": self.obs_loss_weight,
-            "steps_per_epoch": self.steps_per_epoch,
-            "val_every": self.val_every,
-            "log_every": self.log_every,
             "grad_clip_norm": self.grad_clip_norm,
-            "mask_mode": self.mask_mode,
-            "artifact_dir": self.artifact_dir,
         }
 
     def validate(self) -> None:
-        """Raise `ValueError` if train constraints are violated."""
+        """Raise `ValueError` if optimizer constraints are violated."""
         if self.lr <= 0.0:
             raise ValueError(f"lr must be positive, got {self.lr}")
-        if self.epochs <= 0:
-            raise ValueError(f"epochs must be positive, got {self.epochs}")
         if self.weight_decay < 0.0:
             raise ValueError(
                 f"weight_decay must be >= 0, got {self.weight_decay}"
             )
-        if self.t_eps <= 0.0:
-            raise ValueError(f"t_eps must be positive, got {self.t_eps}")
-        if self.obs_loss_weight < 0.0:
-            raise ValueError(
-                "obs_loss_weight must be >= 0, "
-                f"got {self.obs_loss_weight}"
-            )
+
+
+class TrainScheduleConfig:
+    """Epoch / logging schedule knobs inside the flat YAML ``train`` section.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields to a plain dict.
+    validate
+        Check positivity of schedule knobs.
+
+    Instance variables
+    ------------------
+    epochs : int
+        Number of training epochs.
+    steps_per_epoch : int
+        Mini-batches drawn per epoch.
+    val_every : int
+        Validate / checkpoint every this many epochs.
+    log_every : int
+        Print train metrics every this many epochs.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Initialize schedule fields from a flat ``train`` mapping.
+
+        Parameters
+        ----------
+        mapping : Mapping[str, Any]
+            Must contain ``epochs``; other keys are optional with defaults.
+        """
+        self.epochs = int(mapping["epochs"])
+        self.steps_per_epoch = int(
+            mapping.get("steps_per_epoch", _DEFAULT_STEPS_PER_EPOCH)
+        )
+        self.val_every = int(mapping.get("val_every", _DEFAULT_VAL_EVERY))
+        self.log_every = int(mapping.get("log_every", _DEFAULT_LOG_EVERY))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of schedule fields.
+
+        Returns
+        -------
+        dict of str to Any
+            Field name to value.
+        """
+        return {
+            "epochs": self.epochs,
+            "steps_per_epoch": self.steps_per_epoch,
+            "val_every": self.val_every,
+            "log_every": self.log_every,
+        }
+
+    def validate(self) -> None:
+        """Raise `ValueError` if schedule constraints are violated."""
+        if self.epochs <= 0:
+            raise ValueError(f"epochs must be positive, got {self.epochs}")
         if self.steps_per_epoch <= 0:
             raise ValueError(
                 "steps_per_epoch must be positive, "
@@ -318,6 +328,77 @@ class TrainConfig:
             raise ValueError(
                 f"log_every must be positive, got {self.log_every}"
             )
+
+
+class TrainProtocolConfig:
+    """DSM protocol and artifact knobs inside the flat YAML ``train`` section.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields to a plain dict.
+    validate
+        Check positivity / ranges for protocol knobs.
+
+    Instance variables
+    ------------------
+    seed : int
+        PRNG seed for data / masks / training noise.
+    t_eps : float
+        Lower bound for Uniform diffusion-time sampling.
+    obs_loss_weight : float
+        Weight on observed cells in DSM (M1 default ``0.0`` = zero).
+    mask_mode : str
+        ``random``, ``block``, or ``mixed`` self-supervised masks.
+    artifact_dir : str
+        Root directory for checkpoints and loss curves.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Initialize protocol fields from a flat ``train`` mapping.
+
+        Parameters
+        ----------
+        mapping : Mapping[str, Any]
+            Optional keys with module-level defaults.
+        """
+        self.seed = int(mapping.get("seed", _DEFAULT_SEED))
+        self.t_eps = float(mapping.get("t_eps", _DEFAULT_T_EPS))
+        self.obs_loss_weight = float(
+            mapping.get("obs_loss_weight", _DEFAULT_OBS_LOSS_WEIGHT)
+        )
+        self.mask_mode = str(
+            mapping.get("mask_mode", _DEFAULT_MASK_MODE)
+        ).lower()
+        self.artifact_dir = str(
+            mapping.get("artifact_dir", _DEFAULT_ARTIFACT_DIR)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of protocol fields.
+
+        Returns
+        -------
+        dict of str to Any
+            Field name to value.
+        """
+        return {
+            "seed": self.seed,
+            "t_eps": self.t_eps,
+            "obs_loss_weight": self.obs_loss_weight,
+            "mask_mode": self.mask_mode,
+            "artifact_dir": self.artifact_dir,
+        }
+
+    def validate(self) -> None:
+        """Raise `ValueError` if protocol constraints are violated."""
+        if self.t_eps <= 0.0:
+            raise ValueError(f"t_eps must be positive, got {self.t_eps}")
+        if self.obs_loss_weight < 0.0:
+            raise ValueError(
+                "obs_loss_weight must be >= 0, "
+                f"got {self.obs_loss_weight}"
+            )
         if self.mask_mode not in _ALLOWED_MASK_MODES:
             raise ValueError(
                 "mask_mode must be one of "
@@ -325,6 +406,60 @@ class TrainConfig:
             )
         if not self.artifact_dir:
             raise ValueError("artifact_dir must be a non-empty path string")
+
+
+class TrainConfig:
+    """Train section: nested optimizer, schedule, and protocol knobs.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize nested fields to a flat dict matching YAML.
+    validate
+        Validate all nested train subsections.
+
+    Instance variables
+    ------------------
+    optimizer : TrainOptimizerConfig
+        Learning rate, weight decay, grad clip.
+    schedule : TrainScheduleConfig
+        Epochs, steps, val/log cadence.
+    protocol : TrainProtocolConfig
+        Seed, DSM weights, mask mode, artifacts.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Initialize from a mapping (typically the YAML `train` section).
+
+        Parameters
+        ----------
+        mapping : Mapping[str, Any]
+            Must contain `_REQUIRED_TRAIN_KEYS` (flat layout).
+        """
+        _require_keys(mapping, _REQUIRED_TRAIN_KEYS, section="train")
+        self.optimizer = TrainOptimizerConfig(mapping)
+        self.schedule = TrainScheduleConfig(mapping)
+        self.protocol = TrainProtocolConfig(mapping)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a flat dict mirroring the YAML ``train`` layout.
+
+        Returns
+        -------
+        dict of str to Any
+            Merged optimizer / schedule / protocol fields.
+        """
+        merged: dict[str, Any] = {}
+        merged.update(self.optimizer.to_dict())
+        merged.update(self.schedule.to_dict())
+        merged.update(self.protocol.to_dict())
+        return merged
+
+    def validate(self) -> None:
+        """Raise `ValueError` if any nested train subsection is invalid."""
+        self.optimizer.validate()
+        self.schedule.validate()
+        self.protocol.validate()
 
 
 class SampleConfig:
@@ -339,8 +474,8 @@ class SampleConfig:
 
     Instance variables
     ------------------
-    K_samples : int
-        Number of posterior imputation samples.
+    k_samples : int
+        Number of posterior imputation samples (YAML key ``K_samples``).
     solver_steps : int
         Diffrax / discrete reverse solver steps.
     """
@@ -354,7 +489,7 @@ class SampleConfig:
             Must contain `_REQUIRED_SAMPLE_KEYS`.
         """
         _require_keys(mapping, _REQUIRED_SAMPLE_KEYS, section="sample")
-        self.K_samples = int(mapping["K_samples"])
+        self.k_samples = int(mapping["K_samples"])
         self.solver_steps = int(mapping["solver_steps"])
 
     def to_dict(self) -> dict[str, Any]:
@@ -363,18 +498,18 @@ class SampleConfig:
         Returns
         -------
         dict of str to Any
-            Field name to value.
+            Field name to value (YAML key ``K_samples``).
         """
         return {
-            "K_samples": self.K_samples,
+            "K_samples": self.k_samples,
             "solver_steps": self.solver_steps,
         }
 
     def validate(self) -> None:
         """Raise `ValueError` if sample constraints are violated."""
-        if self.K_samples <= 0:
+        if self.k_samples <= 0:
             raise ValueError(
-                f"K_samples must be positive, got {self.K_samples}"
+                f"k_samples must be positive, got {self.k_samples}"
             )
         if self.solver_steps <= 0:
             raise ValueError(

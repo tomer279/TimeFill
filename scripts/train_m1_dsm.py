@@ -22,13 +22,15 @@ from src.models.score_net import (
 )
 from src.sde.vp_sde import VPSDE
 from src.train.loss import ConditionalDSMLoss, dsm_settings_from_config
+from src.train.artifacts import (
+    resolve_artifact_paths,
+    stub_val_imputation_hook,
+)
 from src.train.loop import (
     M1Trainer,
     TrainerBundle,
     build_optimizer,
-    resolve_artifact_paths,
     run_m1_training,
-    stub_val_imputation_hook,
 )
 
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "toy_m1.yaml"
@@ -83,7 +85,7 @@ def main(argv: list[str] | None = None) -> Path:
         _train_with_epoch_override(args.config, args.epochs)
 
     config = load_config(args.config)
-    paths = resolve_artifact_paths(config.train.artifact_dir)
+    paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
     print(f"Wrote {paths.loss_csv()}")
     print(f"Checkpoint {paths.best_checkpoint()}")
     return paths.loss_csv()
@@ -100,9 +102,9 @@ def _train_with_epoch_override(config_path: Path, epochs: int) -> None:
         Epoch override for CPU smoke.
     """
     config = load_config(config_path)
-    config.train.epochs = int(epochs)
-    paths = resolve_artifact_paths(config.train.artifact_dir)
-    key = jax.random.PRNGKey(config.train.seed)
+    config.train.schedule.epochs = int(epochs)
+    paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
+    key = jax.random.PRNGKey(config.train.protocol.seed)
     key_model, key_train = jax.random.split(key)
     model = ConditionalScoreNet(
         key_model,

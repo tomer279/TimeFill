@@ -16,6 +16,7 @@ from src.models.score_net import (
 )
 from src.sample.reverse_sde import (
     ImputeContext,
+    ImputeQuery,
     ImputeSolverSettings,
     ReverseSDEImputer,
     context_from_toy_config,
@@ -51,7 +52,7 @@ def fast_settings(toy_cfg) -> ImputeSolverSettings:
     """CPU-friendly solver settings for unit tests."""
     settings = ImputeSolverSettings(
         solver_steps=_SOLVER_STEPS,
-        t_eps=float(toy_cfg.train.t_eps),
+        t_eps=float(toy_cfg.train.protocol.t_eps),
     )
     settings.validate()
     return settings
@@ -74,13 +75,14 @@ def test_impute_shapes_and_observed_freeze(toy_cfg, fast_settings) -> None:
         settings=fast_settings,
     )
     imputer = ReverseSDEImputer(context)
-    timestamps = grid_timestamps(_SEQ_LEN)
     samples, mean, quantiles = imputer.impute(
-        x_obs,
-        mask,
-        timestamps,
-        key_impute,
-        _K_SAMPLES,
+        ImputeQuery(
+            observations=x_obs,
+            mask=mask,
+            timestamps=grid_timestamps(_SEQ_LEN),
+            key=key_impute,
+            k_samples=_K_SAMPLES,
+        )
     )
     assert samples.shape == (_BATCH_SIZE, _K_SAMPLES, _SEQ_LEN, _N_FEATURES)
     assert mean.shape == (_BATCH_SIZE, _SEQ_LEN, _N_FEATURES)
@@ -122,11 +124,13 @@ def test_impute_unbatched_shapes(toy_cfg, fast_settings) -> None:
         ImputeContext(model, VPSDE(toy_cfg.sde), fast_settings)
     )
     samples, mean, quantiles = imputer.impute(
-        x_obs,
-        mask,
-        grid_timestamps(_SEQ_LEN),
-        key_impute,
-        _K_SAMPLES,
+        ImputeQuery(
+            observations=x_obs,
+            mask=mask,
+            timestamps=grid_timestamps(_SEQ_LEN),
+            key=key_impute,
+            k_samples=_K_SAMPLES,
+        )
     )
     assert samples.shape == (_K_SAMPLES, _SEQ_LEN, _N_FEATURES)
     assert mean.shape == (_SEQ_LEN, _N_FEATURES)
@@ -149,11 +153,13 @@ def test_mean_beats_zero_on_sine_gap_with_oracle(
         ImputeContext(oracle, sde, fast_settings)
     )
     _samples, mean, _quantiles = imputer.impute(
-        x_obs,
-        mask,
-        grid_timestamps(_SEQ_LEN),
-        key_impute,
-        _K_SAMPLES,
+        ImputeQuery(
+            observations=x_obs,
+            mask=mask,
+            timestamps=grid_timestamps(_SEQ_LEN),
+            key=key_impute,
+            k_samples=_K_SAMPLES,
+        )
     )
     missing = mask < _MASK_MISSING_THRESH
     weight = missing.astype(jnp.float32)
@@ -164,14 +170,14 @@ def test_mean_beats_zero_on_sine_gap_with_oracle(
 
 
 def test_context_from_toy_config_smoke(toy_cfg) -> None:
-    """Factory wires sample.solver_steps and train.t_eps."""
+    """Factory wires sample.solver_steps and train.protocol.t_eps."""
     model = ConditionalScoreNet(
         jax.random.PRNGKey(_SEED),
         default_score_net_config(toy_cfg.data.n_features),
     )
     context = context_from_toy_config(model, toy_cfg)
     assert context.settings.solver_steps == toy_cfg.sample.solver_steps
-    assert context.settings.t_eps == toy_cfg.train.t_eps
+    assert context.settings.t_eps == toy_cfg.train.protocol.t_eps
 
 
 class _OracleScore:

@@ -48,8 +48,8 @@ def save_forward_noising(
 ) -> Path:
     """Save a clean window noised at several diffusion times.
 
-    Panels use fractions of ``sde.T_diff`` in
-    ``{0, 0.25, 0.5, 0.75, 1}``. At ``t ≈ T_diff`` the series should look
+    Panels use fractions of ``sde.t_diff`` in
+    ``{0, 0.25, 0.5, 0.75, 1}``. At ``t ≈ t_diff`` the series should look
     near-Gaussian (VP prior).
 
     Parameters
@@ -71,7 +71,7 @@ def save_forward_noising(
     window = _as_batch(clean)
     eps = jax.random.normal(key, shape=window.shape, dtype=jnp.float32)
     times = tuple(
-        fraction * sde.T_diff for fraction in _DEFAULT_TIME_FRACTIONS
+        fraction * sde.t_diff for fraction in _DEFAULT_TIME_FRACTIONS
     )
     time_grid = jnp.arange(window.shape[TIME_AXIS])
     out = Path(output_path)
@@ -90,7 +90,7 @@ def save_forward_noising(
         axis.set_title(f"t={time_value:.2f}")
         axis.set_xlabel("index")
     axes[0].set_ylabel("value")
-    fig.suptitle("VP-SDE forward noising (near-Gaussian at t=T_diff)")
+    fig.suptitle("VP-SDE forward noising (near-Gaussian at t=t_diff)")
     fig.tight_layout()
     save_figure(fig, out)
     plt.close(fig)

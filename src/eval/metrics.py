@@ -177,7 +177,7 @@ class MetricsTable:
             ``(metric_name, value)`` pairs.
         """
         mapping = self.as_dict()
-        return [(name, mapping[name]) for name in mapping]
+        return list(mapping.items())
 
 
 class ImputationEvaluator:

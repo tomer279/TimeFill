@@ -19,12 +19,11 @@ from src.train.loss import (
     DSMLossSettings,
     dsm_settings_from_config,
 )
+from src.train.artifacts import ArtifactPaths, stub_val_imputation_hook
 from src.train.loop import (
-    ArtifactPaths,
     M1Trainer,
     TrainerBundle,
     build_optimizer,
-    stub_val_imputation_hook,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -124,7 +123,7 @@ def test_settings_from_config_matches_yaml(toy_cfg) -> None:
     assert settings.mask_rate == pytest.approx(toy_cfg.data.mask_rate)
     assert settings.block_len == toy_cfg.data.block_len
     assert settings.obs_loss_weight == pytest.approx(0.0)
-    assert settings.mask_mode == toy_cfg.train.mask_mode
+    assert settings.mask_mode == toy_cfg.train.protocol.mask_mode
 
 
 def test_one_train_step_finite(
@@ -135,10 +134,10 @@ def test_one_train_step_finite(
         tmp_path: Path,
 ) -> None:
     """One jitted AdamW step yields finite loss and updated params."""
-    toy_cfg.train.epochs = 1
-    toy_cfg.train.steps_per_epoch = 1
-    toy_cfg.train.val_every = 1
-    toy_cfg.train.log_every = 1
+    toy_cfg.train.schedule.epochs = 1
+    toy_cfg.train.schedule.steps_per_epoch = 1
+    toy_cfg.train.schedule.val_every = 1
+    toy_cfg.train.schedule.log_every = 1
     paths = ArtifactPaths(tmp_path / "m1")
     bundle = TrainerBundle(
         config=toy_cfg,

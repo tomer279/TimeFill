@@ -5,7 +5,9 @@ Classes
 ImputeSolverSettings
     Solver steps, terminal ``t_eps``, quantile levels, noise-init mode.
 ImputeContext
-    Score model + ``VPSDE`` + solver settings (keeps ``impute`` arity small).
+    Score model + ``VPSDE`` + solver settings for reverse imputation.
+ImputeQuery
+    Observations, mask, timestamps, PRNG key, and sample count for one call.
 ReverseSDEImputer
     Multi-sample reverse SDE with observation freezing / replacement.
 
@@ -13,6 +15,8 @@ Functions
 ---------
 context_from_toy_config
     Map ``ToyM1Config`` (+ model) into an ``ImputeContext``.
+context_from_real_config
+    Map ``RealM2Config`` (+ model) into an ``ImputeContext``.
 grid_timestamps
     Integer grid ``0 … T-1`` used when wall-clock times are absent.
 """
@@ -36,6 +40,7 @@ from diffrax import (
 )
 
 from src.data.config import ToyM1Config
+from src.data.real_config import RealM2Config
 from src.data.schema import (
     BATCH_AXIS,
     MASK_OBSERVED,
@@ -138,7 +143,7 @@ class ImputeContext:
     validate
         Validate nested solver settings and SDE horizon vs ``t_eps``.
     diffusion_horizon
-        Return ``sde.T_diff``.
+        Return ``sde.t_diff``.
 
     Instance variables
     ------------------
@@ -158,11 +163,11 @@ class ImputeContext:
     def validate(self) -> None:
         """Validate solver settings against the SDE horizon."""
         self.settings.validate()
-        if self.settings.t_eps >= self.sde.T_diff:
+        if self.settings.t_eps >= self.sde.t_diff:
             raise ValueError(
                 "t_eps must be < T_diff, "
                 f"got t_eps={self.settings.t_eps}, "
-                f"T_diff={self.sde.T_diff}"
+                f"T_diff={self.sde.t_diff}"
             )
 
     def diffusion_horizon(self) -> float:
@@ -171,9 +176,65 @@ class ImputeContext:
         Returns
         -------
         float
-            ``self.sde.T_diff``.
+            ``self.sde.t_diff``.
         """
-        return float(self.sde.T_diff)
+        return float(self.sde.t_diff)
+
+
+@dataclass(frozen=True)
+class ImputeQuery:
+    """Inputs for one ``ReverseSDEImputer.impute`` call.
+
+    Public methods
+    --------------
+    validate
+        Check that ``k_samples`` is positive.
+    batched_pair
+        Batch ``observations`` / ``mask`` if the input was unbatched.
+
+    Instance variables
+    ------------------
+    observations : jax.Array
+        Values shaped ``(B, T, F)`` or ``(T, F)``; missing cells
+        should be the sentinel ``0.0``.
+    mask : jax.Array
+        Observation mask, same shape as ``observations``
+        (``1`` observed, ``0`` missing).
+    timestamps : jax.Array
+        Grid times shaped ``(T,)`` or ``(B, T)``. Unused by the M1
+        dynamics (regular grid); validated for length only.
+    key : jax.Array
+        PRNG key for init noise and Brownian paths.
+    k_samples : int
+        Number of posterior samples ``K`` per series.
+    """
+
+    observations: jnp.ndarray
+    mask: jnp.ndarray
+    timestamps: jnp.ndarray
+    key: jax.Array
+    k_samples: int
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if ``k_samples`` is not positive."""
+        if self.k_samples <= 0:
+            raise ValueError(
+                f"k_samples must be positive, got {self.k_samples}"
+            )
+
+    def batched_pair(self) -> tuple[jnp.ndarray, jnp.ndarray, bool]:
+        """Return batched observations/mask and an unbatched flag.
+
+        Returns
+        -------
+        observations : jax.Array
+            Batched values shaped ``(B, T, F)``.
+        mask : jax.Array
+            Batched mask shaped ``(B, T, F)``.
+        unbatched : bool
+            ``True`` if the original inputs were rank-2 ``(T, F)``.
+        """
+        return _ensure_batch_pair(self.observations, self.mask)
 
 
 class _ReversePack(eqx.Module):
@@ -239,7 +300,7 @@ class ReverseSDEImputer:
     Public methods
     --------------
     impute
-        Draw ``K`` posterior fills; return samples, mean, and quantiles.
+        Draw ``K`` posterior fills from an ``ImputeQuery``.
     summarize_samples
         Reduce an existing ``(B, K, T, F)`` stack to mean and quantiles.
 
@@ -262,29 +323,14 @@ class ReverseSDEImputer:
 
     def impute(
             self,
-            observations: jnp.ndarray,
-            mask: jnp.ndarray,
-            timestamps: jnp.ndarray,
-            key: jax.Array,
-            k_samples: int,
+            query: ImputeQuery,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """Impute missing cells via conditional reverse-SDE sampling.
 
         Parameters
         ----------
-        observations : jax.Array
-            Values shaped ``(B, T, F)`` or ``(T, F)``; missing cells
-            should be the sentinel ``0.0``.
-        mask : jax.Array
-            Observation mask, same shape as ``observations``
-            (``1`` observed, ``0`` missing).
-        timestamps : jax.Array
-            Grid times shaped ``(T,)`` or ``(B, T)``. Unused by the M1
-            dynamics (regular grid); validated for length only.
-        key : jax.Array
-            PRNG key for init noise and Brownian paths.
-        k_samples : int
-            Number of posterior samples ``K`` per series.
+        query : ImputeQuery
+            Observations, mask, timestamps, PRNG key, and ``K``.
 
         Returns
         -------
@@ -296,11 +342,18 @@ class ReverseSDEImputer:
             Low/high quantiles on the last axis, shaped
             ``(B, T, F, 2)`` or ``(T, F, 2)``.
         """
-        if k_samples <= 0:
-            raise ValueError(f"k_samples must be positive, got {k_samples}")
-        obs_b, mask_b, unbatched = _ensure_batch_pair(observations, mask)
-        _validate_timestamps(timestamps, int(obs_b.shape[TIME_AXIS]))
-        samples_b = self._impute_batched(obs_b, mask_b, key, k_samples)
+        query.validate()
+        obs_b, mask_b, unbatched = query.batched_pair()
+        _validate_timestamps(
+            query.timestamps,
+            int(obs_b.shape[TIME_AXIS]),
+        )
+        samples_b = self._impute_batched(
+            obs_b,
+            mask_b,
+            query.key,
+            query.k_samples,
+        )
         mean_b, quantiles_b = self.summarize_samples(samples_b)
         if unbatched:
             return samples_b[0], mean_b[0], quantiles_b[0]
@@ -483,7 +536,7 @@ def context_from_toy_config(
     model : Any
         Trained (or randomly initialized) score callable / Equinox module.
     config : ToyM1Config
-        Validated config; uses ``sde``, ``sample``, and ``train.t_eps``.
+        Validated config; uses ``sde``, ``sample``, and ``train.protocol.t_eps``.
 
     Returns
     -------
@@ -492,7 +545,38 @@ def context_from_toy_config(
     """
     settings = ImputeSolverSettings(
         solver_steps=int(config.sample.solver_steps),
-        t_eps=float(config.train.t_eps),
+        t_eps=float(config.train.protocol.t_eps),
+    )
+    context = ImputeContext(
+        model=model,
+        sde=VPSDE(config.sde),
+        settings=settings,
+    )
+    context.validate()
+    return context
+
+
+def context_from_real_config(
+        model: Any,
+        config: RealM2Config,
+) -> ImputeContext:
+    """Build an ``ImputeContext`` from a real M2 config and score model.
+
+    Parameters
+    ----------
+    model : Any
+        Trained (or randomly initialized) score callable / Equinox module.
+    config : RealM2Config
+        Validated config; uses ``sde``, ``sample``, and ``train.protocol.t_eps``.
+
+    Returns
+    -------
+    ImputeContext
+        Ready for ``ReverseSDEImputer``.
+    """
+    settings = ImputeSolverSettings(
+        solver_steps=int(config.sample.solver_steps),
+        t_eps=float(config.train.protocol.t_eps),
     )
     context = ImputeContext(
         model=model,
@@ -549,7 +633,7 @@ def _integrate_reverse(
         State at ``t ≈ t_eps``, shape ``(T, F)``.
     """
     t0 = 0.0
-    t1 = sde.T_diff - settings.t_eps
+    t1 = sde.t_diff - settings.t_eps
     step_dt = t1 / float(settings.solver_steps)
     y0_flat = pack.flat_state()
     n_flat = int(y0_flat.shape[0])
@@ -600,7 +684,7 @@ def _make_drift_fn(
     callable
         Diffrax drift ``(tau, y_flat, args) -> dydtau_flat``.
     """
-    horizon = sde.T_diff
+    horizon = sde.t_diff
     mask = pack.mask
     x_obs = pack.observations
     missing = 1.0 - mask
@@ -638,7 +722,7 @@ def _make_diffusion_fn(sde: VPSDE, mask: jnp.ndarray):
     callable
         Diffrax diffusion ``(tau, y_flat, args) -> (n, n)`` matrix.
     """
-    horizon = sde.T_diff
+    horizon = sde.t_diff
     missing_flat = (1.0 - mask).reshape((-1,))
 
     def diffusion(

@@ -25,7 +25,7 @@ class VPSDE:
         dx = -0.5 * beta(t) * x dt + sqrt(beta(t)) dW
 
     with ``beta(t)`` linear from ``beta_min`` to ``beta_max`` on
-    ``[0, T_diff]``. The Gaussian transition admits a closed form used by
+    ``[0, t_diff]``. The Gaussian transition admits a closed form used by
     ``marginal_prob`` / ``forward_sample``.
 
     Public methods
@@ -47,8 +47,8 @@ class VPSDE:
         Lower end of the linear ``β(t)`` schedule.
     beta_max : float
         Upper end of the linear ``β(t)`` schedule.
-    T_diff : float
-        Diffusion time horizon; ``t`` is expected in ``[0, T_diff]``.
+    t_diff : float
+        Diffusion time horizon; ``t`` is expected in ``[0, t_diff]``.
     """
 
     def __init__(self, sde_config: SdeConfig) -> None:
@@ -57,15 +57,15 @@ class VPSDE:
         Parameters
         ----------
         sde_config : SdeConfig
-            Config section with ``beta_min``, ``beta_max``, and ``T_diff``.
+            Config section with ``beta_min``, ``beta_max``, and ``t_diff``.
         """
         sde_config.validate()
         self.beta_min = float(sde_config.beta_min)
         self.beta_max = float(sde_config.beta_max)
-        self.T_diff = float(sde_config.T_diff)
+        self.t_diff = float(sde_config.t_diff)
 
     def beta(self, time: jnp.ndarray | float) -> jnp.ndarray:
-        """Evaluate linear ``β(t)`` on ``[0, T_diff]``.
+        """Evaluate linear ``β(t)`` on ``[0, t_diff]``.
 
         Parameters
         ----------
@@ -75,11 +75,11 @@ class VPSDE:
         Returns
         -------
         jax.Array
-            ``β(t) = β_min + (t / T_diff) * (β_max - β_min)``.
+            ``β(t) = β_min + (t / t_diff) * (β_max - β_min)``.
         """
         time_arr = jnp.asarray(time, dtype=jnp.float32)
         span = self.beta_max - self.beta_min
-        return self.beta_min + (time_arr / self.T_diff) * span
+        return self.beta_min + (time_arr / self.t_diff) * span
 
     def marginal_prob(
             self,
@@ -207,7 +207,7 @@ class VPSDE:
         """
         span = self.beta_max - self.beta_min
         return self.beta_min * time + span * (time ** 2) / (
-            2.0 * self.T_diff
+            2.0 * self.t_diff
         )
 
 

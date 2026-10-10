@@ -1,0 +1,40 @@
+# Milestone 1 toy-path hyperparameters.
+# Tensor contract: x, m shaped (B, T, F); m: 1=observed, 0=missing;
+# missing cells in x use sentinel 0.0 (see ASSUMPTIONS.md).
+#
+# WP6 end-to-end: python scripts/run_m1_toy.py --config configs/toy_m1.yaml
+# Artifacts: forward_noising.png, mask_random_vs_block.png,
+# imputation_mean_bands.png, loss curves, checkpoints/best_score_net.eqx
+
+data:
+  seq_len: 64
+  n_features: 2
+  mask_rate: 0.3
+  block_len: 8
+  batch_size: 4
+
+sde:
+  beta_min: 0.1
+  beta_max: 20.0
+  T_diff: 1.0
+
+train:
+  lr: 0.001
+  # CPU-friendly M1 defaults; raise epochs / steps_per_epoch for longer runs.
+  epochs: 40
+  weight_decay: 0.0001
+  seed: 0
+  t_eps: 1.0e-5
+  # Observed cells: zero loss (masked/target only). See ASSUMPTIONS.md.
+  obs_loss_weight: 0.0
+  steps_per_epoch: 20
+  val_every: 5
+  log_every: 1
+  grad_clip_norm: 1.0
+  # random | block | mixed
+  mask_mode: mixed
+  artifact_dir: artifacts/m1
+
+sample:
+  K_samples: 50
+  solver_steps: 100

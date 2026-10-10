@@ -1,7 +1,10 @@
-# Continuous-Time Diffusion Model for Synthetic Time-Series
+# TimeFill
 
-Continuous-time (VP-SDE) score-based imputation for multivariate time series,
-implemented in JAX / Equinox / Diffrax / Optax.
+Probabilistic missing-value imputation for multivariate time series —
+with uncertainty bands, not just point estimates.
+
+Under the hood: a continuous-time (VP-SDE) score-based model in
+JAX / Equinox / Diffrax / Optax.
 
 ## Milestone 1 status
 

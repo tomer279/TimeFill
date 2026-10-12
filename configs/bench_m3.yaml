@@ -1,0 +1,77 @@
+# Milestone 3 benchmark skeleton (WP0). No training.
+# Reuses M2 windows + checkpoint + scaler. See docs/EVAL.md (M3 run contract)
+# and ASSUMPTIONS.md (Milestone 3).
+#
+# Tensor contract (unchanged): x, m shaped (B, T, F); F = 6;
+# m: 1=observed, 0=missing; missing x cells use sentinel 0.0.
+# Metrics on cells with m_native == 1 and m_artificial == 0.
+# Reported MAE/RMSE/CRPS/coverage in original units
+# (FeatureScaler.inverse_transform). DSM / reverse SDE stay normalized.
+#
+# Runner:
+#   python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml
+# CPU smoke (does not change protocols.mcar_rates / block_len):
+#   python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml --smoke
+
+data:
+  processed_dir: data/processed/m2
+  checkpoint: artifacts/m2/checkpoints/best_score_net.eqx
+  scaler: artifacts/m2/checkpoints/feature_scaler.npz
+  # Final tables. Val is smoke/debug only (see smoke.split).
+  split: test
+  n_features: 6
+  feature_names:
+    - PM2.5
+    - PM10
+    - SO2
+    - NO2
+    - CO
+    - O3
+  # Documented only; windows already built by M2 prepare (seq_len 64).
+  seq_len: 64
+
+protocols:
+  mcar_rates:
+    - 0.10
+    - 0.30
+    - 0.50
+  block:
+    # Optional. Set false to skip the block protocol.
+    enabled: true
+    block_len: 8
+
+sample:
+  K_samples: 50
+  solver_steps: 100
+
+seeds:
+  # Artificial MCAR / block masks. Shared across methods.
+  mask: 0
+  # TimeFill reverse-SDE sampler.
+  sample: 1
+
+methods:
+  - timefill
+  - locf
+  - linear
+
+baselines:
+  # Train-feature mean (FeatureScaler.mean, original units) when no usable neighbor.
+  edge_policy: train_feature_mean
+  # Degenerate ensemble so CRPS / coverage columns stay populated.
+  # Alternative not selected: na
+  point_metrics: degenerate_k1
+  point_k: 1
+
+# Stronger baseline (CSDI-style / BRITS / Transformer): deferred for v1.
+# Not in methods; M3 tables are TimeFill vs LOCF vs linear only.
+
+artifact_dir: artifacts/m3
+
+smoke:
+  # null = all windows in data.split. Set a small int for a CPU subset.
+  max_windows: null
+  K_samples: 2
+  solver_steps: 10
+  # Used only when you intentionally debug on val. Reported tables stay on test.
+  split: val

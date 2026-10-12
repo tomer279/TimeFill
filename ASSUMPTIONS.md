@@ -206,3 +206,87 @@ force unless an item below explicitly overrides them for the M2 path.
 - Portfolio polish / full README rewrite beyond an M2 runbook (**M5**)
 - Breaking or regressing the M1 toy path (`configs/toy_m1.yaml`,
   `scripts/run_m1_toy.py`)
+
+---
+
+# Milestone 3 Assumptions
+
+This section extends M1 and M2 for the benchmark. M1 and M2 contracts above
+remain in force. M3 does not redefine training, tensor layout, or mask
+conventions.
+
+## Carry-forward (unchanged)
+
+- **Dataset:** UCI Beijing Multi-Site Air-Quality. **`F = 6`:** `PM2.5`,
+  `PM10`, `SO2`, `NO2`, `CO`, `O3` (same order as `docs/EVAL.md`).
+- Values and masks `(B, T, F)`; `1` = observed, `0` = missing; missing `x`
+  cells are sentinel `0.0`.
+- `m_eval = m_native * m_artificial`. Metrics only where `m_native == 1` and
+  `m_artificial == 0`.
+- DSM / reverse SDE in normalized space. Reported MAE / RMSE / CRPS / coverage
+  in original units via `FeatureScaler.inverse_transform`.
+- Reuse M2 processed windows (`data/processed/m2/`), checkpoint, and scaler.
+  Training is not an M3 exit criterion.
+
+## Report split, protocol grid, seeds
+
+- **Report split: test.** Val is smoke / debug only and is not the comparison
+  table.
+- **Protocol grid:** MCAR rates **0.10 / 0.30 / 0.50** (required). Optional
+  contiguous block with **`block_len` default 8**.
+- **Seeds** in `configs/bench_m3.yaml`, logged in artifacts:
+  - `seeds.mask` — artificial mask (default `0`)
+  - `seeds.sample` — TimeFill sampler (default `1`)
+- One comparison shares the same artificial masks across methods.
+
+## Point-baseline probabilistic metrics
+
+- LOCF and linear are single fills. **Locked policy:** degenerate ensemble
+  **`K = 1`** so CRPS and coverage stay in the table. Record in the table that
+  those methods are non-probabilistic (`K = 1` CRPS is absolute error; interval
+  width is 0).
+- Alternative not selected: CRPS / coverage **N/A** for point methods.
+- TimeFill keeps multi-sample `K` from `sample.K_samples`.
+
+## LOCF / linear edge policy
+
+- Fallback is the **train-feature mean in original units**,
+  `FeatureScaler.mean[f]` on the saved M2 scaler. The normalized mean (0) is
+  not the fallback.
+- Context mask is `m_eval`.
+- **LOCF usable neighbor:** latest earlier observed cell in that window and
+  feature. Otherwise (leading gap, or feature all missing) use the
+  train-feature mean. Trailing cells after the last observation are carried
+  forward.
+- **Linear usable neighbors:** an earlier observed cell and a later observed
+  cell that bracket the gap. Interior gaps are interpolated. Leading gaps,
+  trailing gaps, and all-missing features use the train-feature mean.
+- The reported edge value equals that original-unit mean.
+- **WP2 fill space (locked):** LOCF / linear run in **original units** on
+  inverse-transformed context windows under `m_eval`. TimeFill remains
+  normalized for reverse SDE; all reported metrics stay in original units.
+
+## Artifacts
+
+- M3 artifact root: **`artifacts/m3/`**
+- Config skeleton: `configs/bench_m3.yaml` (paths to M2 `processed_dir`,
+  checkpoint, and scaler).
+
+## Stronger baseline
+
+- CSDI-style, BRITS, or a simple Transformer imputer is **deferred for v1**
+  (not in `methods` / `metrics_by_rate.*`). M3 compares TimeFill to LOCF and
+  linear only; VP-SDE + Diffrax remains the primary method.
+- Required methods: **TimeFill, LOCF, linear**.
+
+## Irregular time (status)
+
+- **Deferred:** irregular wall-clock as first-class SDE dynamics is not
+  promoted in M3. Regular grid + masks only, same as M2.
+
+## Out of scope for M3
+
+- Streamlit app (**M4**)
+- Portfolio polish beyond an M3 runbook (**M5**)
+- Redefining M2 training as an exit criterion
+- Changing `F`, the sentinel, or metric-cell composition

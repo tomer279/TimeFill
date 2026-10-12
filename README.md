@@ -17,8 +17,8 @@ JAX / Equinox / Diffrax / Optax.
 - Diffrax reverse-SDE multi-sample imputation
 - Lightweight masked MAE / RMSE / CRPS / coverage + artifact plots
 
-Out of scope until later milestones: Streamlit (M4) and LOCF / linear /
-CSDI baseline tables (M3).
+Out of scope until later milestones: Streamlit (M4) and LOCF / linear
+baseline tables (see Milestone 3); stronger baseline deferred for v1.
 
 See `ASSUMPTIONS.md` for the locked tensor / mask / sentinel contract and
 `docs/milestone_1_walkthorugh.md` for the work-package walkthrough.
@@ -42,12 +42,44 @@ See `ASSUMPTIONS.md` for the locked tensor / mask / sentinel contract and
 **Deferred (do not advertise as done)**
 - Irregular wall-clock as **first-class SDE dynamics** (resample / bin →
   regular windows + masks only; see `ASSUMPTIONS.md`)
-- LOCF / linear / CSDI baseline tables (**M3**)
+- LOCF / linear baseline tables → **Milestone 3** below
+- Stronger baseline (CSDI / BRITS / Transformer) **deferred for v1**
 - Streamlit app (**M4**)
 - Portfolio polish beyond this runbook (**M5**)
 
 Contracts: `ASSUMPTIONS.md` (M1 + M2), evaluation freeze: `docs/EVAL.md`,
 walkthrough: `docs/milestone_2_walkthrough.md`.
+
+## Milestone 3 status
+
+**M3 — Benchmark** (Phase 4 evidence layer) on the frozen M2 Beijing path.
+
+**What works**
+- Same held-out protocols and metric cells as `docs/EVAL.md` /
+  `ASSUMPTIONS.md` (M3): MCAR **10% / 30% / 50%**, optional contiguous
+  block (`block_len` 8)
+- Methods: **TimeFill** (VP-SDE + Diffrax, multi-sample) vs **LOCF** and
+  **linear** (point fills; degenerate `K = 1` for CRPS / coverage columns)
+- Report split: **test** (val only via `--smoke`); artifacts under
+  `artifacts/m3/` (`metrics_by_rate.csv` / `.json`, `panels/`)
+- Metrics in **original units** via `FeatureScaler.inverse_transform`
+
+**Claims (vs LOCF / linear only)**
+- Target: beat LOCF / linear on **CRPS** and **coverage** where the
+  comparison is meaningful; stay **competitive on MAE**.
+- Fill real numbers into `docs/m3_failure_notes.md` after a full test run
+  (see Failure notes under How to run (M3)). Do **not** claim a win vs
+  CSDI / BRITS / Transformer — that stronger baseline is **deferred for v1**.
+
+**Deferred (do not advertise as done)**
+- Irregular wall-clock as **first-class SDE dynamics** (same as M2;
+  regular grid + masks only)
+- Stronger baseline (CSDI-style / BRITS / Transformer) **deferred for v1**
+- Streamlit app (**M4**)
+- Portfolio polish beyond this M3 runbook (**M5**)
+
+Contracts: `ASSUMPTIONS.md` (M1–M3), `docs/EVAL.md` (M3 run contract),
+walkthrough: `docs/milestone_3_walkthrough.md`.
 
 ## Install
 
@@ -204,6 +236,74 @@ python scripts/run_m2_impute_val.py --config configs/real_m2.yaml --ckpt artifac
 - `scripts/train_m2_real.py` — real-window DSM trainer
 - `scripts/run_m2_impute_val.py` — checkpoint → val metrics + bands plot
 - `pytest tests/test_real_loader.py tests/test_normalize_fit_train_only.py tests/test_real_train_smoke.py tests/test_m2_impute_val.py -q`
+
+## How to run (M3)
+
+Prerequisites: M2 data + checkpoint (prepare → train). Do **not** redefine
+training as an M3 exit criterion; reuse
+`artifacts/m2/checkpoints/best_score_net.eqx` and
+`artifacts/m2/checkpoints/feature_scaler.npz`.
+
+### 1) Prepare + train (M2, once)
+
+```bash
+python scripts/prepare_m2_data.py --config configs/real_m2.yaml
+python scripts/train_m2_real.py --config configs/real_m2.yaml
+```
+
+### 2) Benchmark
+
+```bash
+python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml
+```
+
+Writes under `artifacts/m3/`:
+
+| Artifact | Meaning |
+|---|---|
+| `metrics_by_rate.csv` / `.json` | TimeFill vs LOCF vs linear by protocol |
+| `panels/` | Truth vs TimeFill mean ± bands vs point baselines |
+
+Config: `configs/bench_m3.yaml` (rates, seeds, `K`, paths, `artifact_dir`).
+Point baselines use degenerate `K = 1` CRPS / coverage (non-probabilistic;
+see `docs/EVAL.md`).
+
+### Compute limits (CPU smoke)
+
+- **Full defaults** (`sample.K_samples: 50`, `sample.solver_steps: 100`,
+  all test windows) are slow on CPU.
+- **`--smoke`:** uses `smoke.*` from the config — default `K_samples: 2`,
+  `solver_steps: 10`, and `split: val` (debug only; **not** the report
+  table). Set `smoke.max_windows` to a small int (e.g. `4`) for a true
+  subset; `null` means all windows in that split.
+
+```bash
+# CPU smoke (val + short sampler; set smoke.max_windows in YAML for a cap)
+python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml --smoke
+```
+
+### Related M3 scripts / tests
+
+- `scripts/run_m3_benchmark.py` — end-to-end comparison runner
+- `pytest tests/test_baselines_locf_linear.py tests/test_m3_benchmark_helpers.py -q`
+- Failure-note template: `docs/m3_failure_notes.md`
+
+### Failure notes (expected win / lose vs LOCF / linear)
+
+Paste numbers from `artifacts/m3/metrics_by_rate.csv` after a **test** run
+into `docs/m3_failure_notes.md`. Hypotheses until then:
+
+| Regime | Expect TimeFill | Why |
+|---|---|---|
+| Long contiguous blocks | Win on CRPS / coverage; MAE mixed | Uncertainty bands; LOCF/linear extrapolate poorly across long gaps |
+| High MCAR (50%) | Win on CRPS / coverage; MAE competitive | Multi-feature context; point methods ignore cross-channel structure |
+| Sparse / heavily native-missing features | Lose or tie on MAE | Edge policy falls back to train-feature mean; little context for the score net |
+| Short interior gaps / low MCAR (10%) | Competitive MAE; CRPS edge smaller | Linear / LOCF already strong on short gaps |
+
+**Claim discipline:** report vs **LOCF and linear only**. No overclaim vs
+CSDI (stronger baseline deferred for v1). If CRPS / coverage or MAE fall
+short of the M3 target, document the shortfall in the failure notes — do
+not paper over it.
 
 ## License
 

@@ -4,6 +4,10 @@ This document freezes datasets, schema, splits, missingness protocols, metrics,
 and the baseline list for TimeFill. M2 implements the real-data training path
 against this contract; full baseline tables are deferred to **M3**.
 
+The **M3 run contract** below freezes the report split, protocol grid, seeds,
+and point-baseline metric policy. The feature list and mask rules in this
+file stay as written for M2.
+
 ## Primary dataset (M2 exit criterion)
 
 **Choice:** [Beijing Multi-Site Air-Quality Data Set](https://archive.ics.uci.edu/dataset/501/beijing+multi+site+air+quality+data)
@@ -103,6 +107,8 @@ the M2 primary feature set unless a later assumption explicitly expands `F`.
   split **before** windowing on time/entity partitions.
 - Artificial masks for metrics are drawn only on cells that are observed in the
   ground-truth window (`m_native == 1`).
+- **M3 report split:** **test**. Validation is for M2 model selection and for
+  M3 smoke/debug only (see M3 run contract).
 
 ## Missingness protocols
 
@@ -142,8 +148,107 @@ Do **not** require baseline tables for M2 exit.
 3. **Stronger baseline (time permitting)** — e.g. BRITS, a simple Transformer
    imputer, or a reimplementation-light CSDI-style discrete conditional diffusion
 
+M3 required vs preferred status, and the point-baseline CRPS / coverage
+policy, are locked under **M3 run contract**.
+
+## M3 run contract
+
+M3 reuses the M2 processed windows, checkpoint, and scaler. Training is not an
+M3 exit criterion. Config: `configs/bench_m3.yaml`. Artifact root:
+`artifacts/m3/`.
+
+Tensor and mask conventions are unchanged: `x` and `m` shaped `(B, T, F)` with
+`F = 6`; `m`: `1` = observed, `0` = missing; missing `x` cells are sentinel
+`0.0`. Composition for scoring is `m_eval = m_native * m_artificial`. Metrics
+run only on cells with `m_native == 1` and `m_artificial == 0`. DSM and the
+reverse SDE stay in normalized space. Reported MAE / RMSE / CRPS / coverage
+are in **original units** via `FeatureScaler.inverse_transform`.
+
+### Report split
+
+- **Final tables use the test partition** from M2 prepare
+  (`data/processed/m2/`, `split_seed` and fractions from `configs/real_m2.yaml`).
+- **Val is smoke / debug only** (CPU subset, checkpoint sanity). Val numbers
+  are not the M3 comparison.
+- Load `artifacts/m2/checkpoints/best_score_net.eqx` and
+  `artifacts/m2/checkpoints/feature_scaler.npz`.
+
+### Protocol grid
+
+| Protocol | Settings | Required for M3 tables |
+|---|---|---|
+| MCAR | rates **0.10 / 0.30 / 0.50** on cells with `m_native == 1` | yes |
+| Contiguous block | one gap per `(window, feature)`, `block_len` default **8** | optional |
+
+The M2 train / impute default `mask_rate: 0.2` stays on the training path.
+M3 sensitivity tables use the grid above. The same artificial masks are shared
+across methods in one comparison.
+
+### Seeds
+
+Fixed in `configs/bench_m3.yaml` and logged on every artifact row:
+
+| Field | Role |
+|---|---|
+| `seeds.mask` | Artificial-mask draw (MCAR and block) |
+| `seeds.sample` | TimeFill reverse-SDE sampler |
+
+### Point-baseline CRPS / coverage
+
+LOCF and linear each emit one fill. **Locked policy:** treat that fill as a
+degenerate ensemble with **`K = 1`**, so CRPS and coverage columns stay
+populated next to TimeFill. Tables note that those methods are
+non-probabilistic. With `K = 1`, CRPS reduces to absolute error of the point
+fill, and a central interval has width 0 (coverage is the hit rate of that
+point).
+
+**Alternative (not used):** mark CRPS / coverage **N/A** for point methods and
+compare those metrics for TimeFill only. Switching to N/A requires an edit to
+this section and to the Milestone 3 section of `ASSUMPTIONS.md`.
+
+TimeFill uses `sample.K_samples` (default 50) and `sample.solver_steps`
+(default 100) from `configs/bench_m3.yaml`.
+
+### Baselines (M3)
+
+| Method | Status |
+|---|---|
+| LOCF | **required** |
+| Linear interpolation | **required** |
+| Stronger baseline (CSDI-style, BRITS, or a simple Transformer) | **deferred for v1** (absent from `methods`; compare vs LOCF / linear only) |
+
+**Edge policy (LOCF / linear).** Fallback value is the **train-feature mean**
+in original units: `FeatureScaler.mean[f]` from the saved M2 scaler (fit on
+train cells with `m_native == 1`). The normalized mean is 0 and is not the
+fallback. Baselines read the evaluation observation mask `m_eval`
+(`1` = available context, `0` = to fill).
+
+A **usable neighbor** depends on the method:
+
+- **LOCF:** the latest earlier cell in the same window and feature with
+  `m_eval == 1`. Carry that value forward. A leading run, and every cell of a
+  feature with no observed cell in the window, has no usable neighbor and
+  takes the train-feature mean. A trailing run after the last observation is
+  LOCF (that observation is a usable neighbor).
+- **Linear:** the nearest earlier and nearest later observed cells that
+  bracket the gap. Interior gaps are linear interpolation on observed time
+  indices. A leading gap, a trailing gap, and an all-missing feature have no
+  bracketing pair and take the train-feature mean.
+
+WP1 unit-tests this rule. Which array space the rest of the fill is computed
+in (original units, or normalized then inverse-transformed) is chosen in the
+benchmark runner (WP2). The reported edge value equals `FeatureScaler.mean[f]`.
+
+### Still deferred
+
+Irregular wall-clock time as first-class SDE dynamics stays deferred. M3 uses
+the M2 regular grid plus masks. Streamlit is M4. Portfolio polish beyond an
+M3 runbook is M5. Stronger baseline (CSDI / BRITS / Transformer) is deferred
+for v1.
+
 ## Out of scope here
 
-- Running LOCF / linear / CSDI tables (**M3**)
+- Implementing the benchmark runner and baseline code (later M3 work packages;
+  the report contract is **M3 run contract** above)
 - Streamlit product (**M4**)
 - Full portfolio README rewrite (**M5**)

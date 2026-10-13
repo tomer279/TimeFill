@@ -40,10 +40,11 @@ data:
     - NO2
     - CO
     - O3
-  # Artificial MCAR rate on originally observed cells; compose with m_native.
-  mask_rate: 0.2
+  # Prefer a rate nearer the harder end of the M3 grid.
+  # Tradeoff: may slightly hurt MCAR 10% vs linear; helps 30/50% + CRPS.
+  mask_rate: 0.3
   block_len: 8
-  batch_size: 8
+  batch_size: 8           # raise to 16–32 if GPU / RAM allows
   # Entity-aware preferred; prepare script CLI can override.
   split_mode: entity
   split_seed: 0
@@ -61,18 +62,19 @@ sde:
 train:
   lr: 0.0003
   # CPU-friendly defaults below; raise epochs / steps_per_epoch for longer runs.
-  epochs: 100
+  epochs: 200         # was 100; raise further if val still improving
   weight_decay: 0.0001
   seed: 0
   t_eps: 1.0e-5
-  # Observed cells: zero loss (masked/target only). See ASSUMPTIONS.md.
-  obs_loss_weight: 0.0
-  steps_per_epoch: 200
+  # Light aux on observed cells (try 0.0 first if mixed alone helps)
+  obs_loss_weight: 0.1
+  steps_per_epoch: 400    # was 200
   val_every: 5
   log_every: 1
   grad_clip_norm: 1.0
   # random | block | mixed
-  mask_mode: random
+  # Critical: train on both MCAR and contiguous gaps
+  mask_mode: mixed          # was random; ~50% block / 50% random per step
   artifact_dir: artifacts/m2
   # Lightweight val reverse-impute snapshots during training (WP3).
   # Full sample.K_samples / solver_steps remain for WP4 val impute script.

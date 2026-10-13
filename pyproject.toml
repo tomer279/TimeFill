@@ -36,11 +36,17 @@ dependencies = [
     "diffrax>=0.5.0",
     "optax>=0.2.0",
     "matplotlib>=3.8.0",
+    "pandas>=2.0",
     "pyyaml>=6.0",
     "pytest>=8.0",
 ]
 
 [project.optional-dependencies]
+# Streamlit product surface (M4). Core tests do not require this extra.
+app = [
+    "streamlit>=1.28",
+    "plotly>=5.18",
+]
 # Optional CUDA install is platform-specific; see README (JAX docs).
 # Example (do not pin blindly): pip install -U "jax[cuda12]"
 
@@ -50,7 +56,7 @@ Homepage = "https://github.com/OWNER/REPO"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "app*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

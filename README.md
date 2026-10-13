@@ -17,8 +17,8 @@ JAX / Equinox / Diffrax / Optax.
 - Diffrax reverse-SDE multi-sample imputation
 - Lightweight masked MAE / RMSE / CRPS / coverage + artifact plots
 
-Out of scope until later milestones: Streamlit (M4) and LOCF / linear
-baseline tables (see Milestone 3); stronger baseline deferred for v1.
+LOCF / linear baseline tables are under Milestone 3; the Streamlit product
+is Milestone 4 below. Stronger baseline is deferred for v1.
 
 See `ASSUMPTIONS.md` for the locked tensor / mask / sentinel contract and
 `docs/milestone_1_walkthorugh.md` for the work-package walkthrough.
@@ -42,10 +42,11 @@ See `ASSUMPTIONS.md` for the locked tensor / mask / sentinel contract and
 **Deferred (do not advertise as done)**
 - Irregular wall-clock as **first-class SDE dynamics** (resample / bin →
   regular windows + masks only; see `ASSUMPTIONS.md`)
-- LOCF / linear baseline tables → **Milestone 3** below
 - Stronger baseline (CSDI / BRITS / Transformer) **deferred for v1**
-- Streamlit app (**M4**)
 - Portfolio polish beyond this runbook (**M5**)
+
+**Later milestones (shipped below):** LOCF / linear tables → Milestone 3;
+Streamlit product → Milestone 4.
 
 Contracts: `ASSUMPTIONS.md` (M1 + M2), evaluation freeze: `docs/EVAL.md`,
 walkthrough: `docs/milestone_2_walkthrough.md`.
@@ -75,11 +76,89 @@ walkthrough: `docs/milestone_2_walkthrough.md`.
 - Irregular wall-clock as **first-class SDE dynamics** (same as M2;
   regular grid + masks only)
 - Stronger baseline (CSDI-style / BRITS / Transformer) **deferred for v1**
-- Streamlit app (**M4**)
 - Portfolio polish beyond this M3 runbook (**M5**)
+
+Streamlit product → **Milestone 4** below.
 
 Contracts: `ASSUMPTIONS.md` (M1–M3), `docs/EVAL.md` (M3 run contract),
 walkthrough: `docs/milestone_3_walkthrough.md`.
+
+## Milestone 4 status
+
+**M4 — Product** (Phase 5 Streamlit layer): bundled sample or upload →
+reverse-SDE impute → mean ± bands → download mean-fill CSV (original units).
+
+**What works**
+- Pretrained M2 checkpoint + scaler only (no training in the happy path)
+- Schema: frozen `F = 6` Beijing columns (`docs/EVAL.md`); exact names; no
+  silent remaps
+- Latency defaults in `configs/app_m4.yaml`: `K=8`, `solver_steps=20`,
+  `smoke.max_windows=4` (smaller than M3 report settings)
+- UI: missingness summary, Plotly mean ± bands, optional sample overlay,
+  mean-fill + optional multi-sample long CSV
+- Optional “Quick quality check” = **smoke slice only** (not the M3 report)
+- Non-UI smoke: `python scripts/run_m4_impute_sample.py --config configs/app_m4.yaml`
+
+**Explicitly deferred**
+- On-the-fly fine-tune in the UI (**deferred for v1**; pretrained only)
+- Irregular wall-clock as first-class SDE dynamics (timestamps for
+  resample / display only; regular grid + masks)
+- Full M3 benchmark grid in the app → use `scripts/run_m3_benchmark.py`
+- Portfolio polish / full README rewrite (**M5**)
+
+Contracts: `ASSUMPTIONS.md` (Milestone 4), `docs/EVAL.md` (M4 demo note),
+walkthrough: `docs/milestone_4_walkthrough.md`.
+
+### How to run (M4)
+
+Prerequisites: core install plus the Streamlit extra, and M2 artifacts.
+
+```bash
+pip install -e ".[app]"
+```
+
+#### 1) M2 artifacts (once)
+
+```bash
+python scripts/prepare_m2_data.py --config configs/real_m2.yaml
+python scripts/train_m2_real.py --config configs/real_m2.yaml
+```
+
+Expect:
+
+- `artifacts/m2/checkpoints/best_score_net.eqx`
+- `artifacts/m2/checkpoints/feature_scaler.npz`
+
+Missing checkpoint / scaler / feature-count mismatch fails fast with a clear
+message (paths are locked in `configs/app_m4.yaml`).
+
+#### 2) Launch the demo
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+In the app: choose the bundled sample (or upload a CSV with the frozen
+columns) → **Fill missing values** → inspect mean ± bands → download the
+mean-fill CSV. Optional: multi-sample long CSV; **Run a quick quality check**
+(smoke only).
+
+#### 3) Compute limits (CPU vs GPU)
+
+- **CPU:** defaults (`K=8`, `solver_steps=20`, ≤4 windows via
+  `smoke.max_windows`) target a few minutes. Raising `K` / steps toward M3
+  report settings (`50` / `100` in `configs/bench_m3.yaml`) is much slower.
+- **GPU:** optional. Install a matching JAX CUDA build (see Install →
+  JAX: CPU vs CUDA); same config, shorter wall time.
+- **Window batching:** the UI processes at most `smoke.max_windows`
+  (default **4**). Longer uploads need another run or a deliberate cap
+  increase in `configs/app_m4.yaml`.
+
+Config: `configs/app_m4.yaml`. Full benchmark tables remain:
+
+```bash
+python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml
+```
 
 ## Install
 

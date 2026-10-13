@@ -9,10 +9,6 @@ import argparse
 import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 import jax
 
 from src.data.config import load_config
@@ -33,6 +29,9 @@ from src.train.loop import (
     run_m1_training,
 )
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "toy_m1.yaml"
 
 

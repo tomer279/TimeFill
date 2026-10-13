@@ -242,13 +242,26 @@ benchmark runner (WP2). The reported edge value equals `FeatureScaler.mean[f]`.
 ### Still deferred
 
 Irregular wall-clock time as first-class SDE dynamics stays deferred. M3 uses
-the M2 regular grid plus masks. Streamlit is M4. Portfolio polish beyond an
-M3 runbook is M5. Stronger baseline (CSDI / BRITS / Transformer) is deferred
-for v1.
+the M2 regular grid plus masks. Streamlit product details are M4 (see below).
+Portfolio polish beyond an M3 runbook is M5. Stronger baseline (CSDI / BRITS /
+Transformer) is deferred for v1.
+
+## M4 demo note (product layer)
+
+M4 is the Streamlit upload → impute → download path (`app/streamlit_app.py`).
+It reuses this document’s frozen `F = 6` feature list and mask rules. Happy
+path: pretrained M2 checkpoint + scaler
+(`artifacts/m2/checkpoints/best_score_net.eqx`, `feature_scaler.npz`). Bundled
+sample path and UI defaults live in `configs/app_m4.yaml` /
+`ASSUMPTIONS.md` (Milestone 4). Upload columns must match the frozen names
+exactly (no silent remaps). **On-the-fly fine-tune is deferred for v1**
+(pretrained only). Full M3 tables stay in `scripts/run_m3_benchmark.py`; any
+in-app “eval” is a small smoke slice only. Irregular wall-clock as first-class
+SDE dynamics remains deferred (timestamps for resample / display only).
 
 ## Out of scope here
 
 - Implementing the benchmark runner and baseline code (later M3 work packages;
   the report contract is **M3 run contract** above)
-- Streamlit product (**M4**)
 - Full portfolio README rewrite (**M5**)
+- M4 Streamlit UI lives under `app/` (schema contract above); not redefined here

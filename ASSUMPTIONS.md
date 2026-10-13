@@ -290,3 +290,120 @@ conventions.
 - Portfolio polish beyond an M3 runbook (**M5**)
 - Redefining M2 training as an exit criterion
 - Changing `F`, the sentinel, or metric-cell composition
+
+---
+
+# Milestone 4 Assumptions
+
+This section extends M1–M3 for the Streamlit product layer (Phase 5). M1–M3
+contracts above remain in force. M4 does not redefine `F`, the sentinel, the
+mask alphabet, or training.
+
+## Carry-forward (unchanged)
+
+- **Dataset / pretrained path:** UCI Beijing Multi-Site Air-Quality. **`F = 6`**
+  in order `PM2.5`, `PM10`, `SO2`, `NO2`, `CO`, `O3` (same as `docs/EVAL.md`).
+- Values and masks `(B, T, F)`; default **`T = seq_len = 64`**; `1` = observed,
+  `0` = missing; missing `x` cells are sentinel `0.0`. Never infer missingness
+  from nonzero values in `x`.
+- DSM / reverse SDE in **normalized** space via saved `FeatureScaler`.
+  Displayed and downloaded values are in **original units** after
+  `inverse_transform`.
+- Reuse M2 checkpoint + scaler:
+  `artifacts/m2/checkpoints/best_score_net.eqx`,
+  `artifacts/m2/checkpoints/feature_scaler.npz`.
+- TimeFill imputer: existing `src/sample` reverse-SDE impute API (multi-sample
+  mean ± bands). Observed cells stay conditioning context.
+
+## Happy path (pretrained only)
+
+- Default UX loads the M2 checkpoint + scaler and completes on the bundled
+  sample without training.
+- **On-the-fly fine-tune is deferred for v1** (not the happy path). Shipping it
+  later requires an explicit ASSUMPTIONS unlock and an opt-in UI toggle; it
+  must not block the pretrained demo.
+
+## Bundled sample and upload schema
+
+- Bundled demo CSV lives under **`app/sample_data/`** (config key
+  `data.sample_csv`). The file may be a stub path until WP1 ships the slice.
+- **Required columns:** frozen feature names in EVAL order
+  (`PM2.5`, `PM10`, `SO2`, `NO2`, `CO`, `O3`). Exact names; **reject** missing
+  required columns and **do not silently remap** aliases.
+- **`timestamp`:** recommended (wall-clock for resample / display). If absent,
+  treat rows as already ordered on a regular grid index `0 … N-1`.
+- **`entity` / `site`:** optional; used for grouping / display only in M4.
+- Native NaNs / empty cells → `m_native = 0`, value sentinel `0.0`.
+
+## Window / length policy
+
+- After optional hourly last-value-in-bin resample (same spirit as M2 prep),
+  build **non-overlapping** windows of length `T = seq_len` (default 64).
+- **Shorter than `T`:** single window, **right-pad** with sentinel `0.0` and
+  `m = 0` on padded steps (padded cells are never imputation targets with GT).
+- **Longer than `T`:** emit consecutive non-overlapping windows; a trailing
+  remainder shorter than `T` is right-padded as above.
+- Cap processed windows with `smoke.max_windows` (UI latency guard). Document
+  the effective count in session / download metadata when practical.
+
+## Demo corruption
+
+- Sidebar may apply optional artificial **MCAR** or **contiguous block** masks
+  on otherwise observed demo cells.
+- Compose **`m = m_native * m_artificial`** (elementwise), same as M2/M3 eval.
+  Only natively observed cells can become demo targets.
+
+## UI defaults (latency-first)
+
+Locked in `configs/app_m4.yaml` (smaller than the M3 report settings):
+
+| Knob | M4 default | M3 report (`bench_m3.yaml`) |
+|---|---|---|
+| `sample.K_samples` | **8** | 50 |
+| `sample.solver_steps` | **20** | 100 |
+| `seeds.mask` | **0** | 0 |
+| `seeds.sample` | **1** | 1 |
+
+Raising `K` / steps toward M3 values is allowed in the sidebar for quality;
+defaults stay latency-first so the pretrained demo finishes in a few minutes.
+
+## Downloads
+
+- **Required:** mean-fill CSV in **original units**. Observed cells
+  (`m == 1` after composition used for the run) are preserved; targets filled
+  with the posterior mean.
+- **Optional:** multi-sample long format
+  (`sample_id`, time, feature, value) in original units.
+
+## Demo-eval button
+
+- **Shipped (smoke only):** the Streamlit “Run evaluation on demo dataset”
+  control runs a tiny MCAR slice via `app/demo_eval_smoke.py`, reusing
+  `ImputationEvaluator` / `metric_observation_mask`. Caps live under
+  `smoke.*` in `configs/app_m4.yaml`.
+- The full M3 protocol grid stays in `scripts/run_m3_benchmark.py`. UI metrics
+  must be labeled as a smoke / demo slice, not the report table.
+
+## Artifacts
+
+- App config: **`configs/app_m4.yaml`** (M2 checkpoint / scaler, sample CSV,
+  UI defaults, seeds, smoke caps).
+- Optional runtime outputs: **`artifacts/m4/`** (e.g. persisted demo-eval
+  slice). Not required for the happy path.
+- Launch (WP3+): `streamlit run app/streamlit_app.py`
+
+## Irregular time (status)
+
+- **Deferred:** irregular wall-clock as first-class SDE dynamics is **not**
+  promoted in M4. Timestamps may be used for resample / display only; dynamics
+  remain regular grid + masks.
+
+## Out of scope for M4
+
+- Portfolio polish / full README rewrite (**M5**)
+- Full M3 benchmark grid inside the app
+- Retraining / fine-tune as the happy path
+- Redefining `F`, the sentinel, or the mask alphabet
+- Breaking or regressing M1–M3 contracts
+- Replacing the project with a CSDI port
+- Advertising irregular-time SDE dynamics as completed

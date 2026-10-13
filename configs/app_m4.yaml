@@ -1,0 +1,62 @@
+# Milestone 4 Streamlit product skeleton (WP0). No UI logic here.
+# Reuses M2 checkpoint + scaler. See ASSUMPTIONS.md (Milestone 4) and
+# docs/EVAL.md (M4 demo note). Pretrained-only happy path; fine-tune deferred.
+#
+# Tensor contract (unchanged): x, m shaped (B, T, F); F = 6;
+# m: 1=observed, 0=missing; missing x cells use sentinel 0.0.
+# Reverse SDE / DSM in normalized space; UI display + downloads in original
+# units via FeatureScaler.inverse_transform.
+#
+# Runner:
+#   pip install -e ".[app]"
+#   streamlit run app/streamlit_app.py
+# See README "How to run (M4)" for M2 artifact prerequisites, CPU vs GPU,
+# and smoke.max_windows batching.
+#
+# Latency-first Streamlit defaults below (few minutes on CPU for small
+# uploads). M3 report settings remain sample.K_samples=50 /
+# sample.solver_steps=100 in configs/bench_m3.yaml.
+#
+# Architecture / VP-SDE match the M2 train config (pretrained weights only).
+real_config: configs/real_m2.yaml
+
+data:
+  checkpoint: artifacts/m2/checkpoints/best_score_net.eqx
+  scaler: artifacts/m2/checkpoints/feature_scaler.npz
+  # Bundled demo CSV (WP1 ships contents; path is locked here).
+  sample_csv: app/sample_data/beijing_demo_slice.csv
+  n_features: 6
+  feature_names:
+    - PM2.5
+    - PM10
+    - SO2
+    - NO2
+    - CO
+    - O3
+  seq_len: 64
+
+sample:
+  # Smaller than M3 report for Streamlit wall time.
+  K_samples: 8
+  solver_steps: 20
+
+seeds:
+  # Artificial MCAR / block demo corruption.
+  mask: 0
+  # TimeFill reverse-SDE sampler.
+  sample: 1
+
+# Optional UI / demo-eval caps (not the full M3 grid).
+smoke:
+  # Cap windows processed in the app (null = no cap beyond upload size).
+  # Longer series: raise deliberately or run another batch; see README M4.
+  max_windows: 4
+  # Demo-eval button: tiny slice only; full tables stay run_m3_benchmark.py.
+  K_samples: 2
+  solver_steps: 10
+  mcar_rates:
+    - 0.30
+  block_len: 8
+
+# Optional persisted demo-eval outputs. Happy path does not require writes.
+artifact_dir: artifacts/m4

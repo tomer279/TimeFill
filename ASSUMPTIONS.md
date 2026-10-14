@@ -203,7 +203,8 @@ force unless an item below explicitly overrides them for the M2 path.
 
 - LOCF / linear / CSDI baseline tables (**M3**)
 - Streamlit app (**M4**)
-- Portfolio polish / full README rewrite beyond an M2 runbook (**M5**)
+- Portfolio polish / full README rewrite (**M5**) — **shipped**; see
+  Milestone 5 below
 - Breaking or regressing the M1 toy path (`configs/toy_m1.yaml`,
   `scripts/run_m1_toy.py`)
 
@@ -287,7 +288,8 @@ conventions.
 ## Out of scope for M3
 
 - Streamlit app (**M4**)
-- Portfolio polish beyond an M3 runbook (**M5**)
+- Portfolio polish beyond an M3 runbook (**M5**) — **shipped**; see
+  Milestone 5 below
 - Redefining M2 training as an exit criterion
 - Changing `F`, the sentinel, or metric-cell composition
 
@@ -400,10 +402,118 @@ defaults stay latency-first so the pretrained demo finishes in a few minutes.
 
 ## Out of scope for M4
 
-- Portfolio polish / full README rewrite (**M5**)
+- Portfolio polish / full README rewrite (**M5**) — **shipped**; see
+  Milestone 5 below
 - Full M3 benchmark grid inside the app
 - Retraining / fine-tune as the happy path
 - Redefining `F`, the sentinel, or the mask alphabet
 - Breaking or regressing M1–M3 contracts
 - Replacing the project with a CSDI port
 - Advertising irregular-time SDE dynamics as completed
+
+---
+
+# Milestone 5 Assumptions (v1 portfolio)
+
+This section locks the **v1 portfolio / README surface** for Milestone 5.
+M1–M4 contracts above remain in force. M5 does **not** redefine `F`, the
+sentinel, the mask alphabet, training, the M3 report protocol, or the M4
+Streamlit happy path.
+
+## Portfolio surface
+
+- **README.md** is the portfolio front door: narrative problem → method →
+  evidence → demo → reproduce → assumptions / limits → citations.
+- **Contracts stay here and in `docs/EVAL.md`** (and walkthroughs). Do not
+  move tensor / mask / metric-cell rules into README prose as the source of
+  truth.
+- Product name: **TimeFill**. License: **MIT** (`LICENSE.txt`).
+- **North star vs v1:** README may state a universal train-on-upload +
+  gap-regime routing product goal as **post-v1**. v1 claim scope stays
+  Beijing `F=6` pretrained path + LOCF/linear evidence only — do not advertise
+  train-on-arbitrary-CSV or gap specialists as shipped.
+
+## Metrics source of truth
+
+- Portfolio numbers must come from:
+  - `docs/m3_failure_notes.md` (preferred narrative + claim checklist), and/or
+  - `artifacts/m3/metrics_by_rate.csv` (and `.json`) produced by
+    `scripts/run_m3_benchmark.py` on the **test** split.
+- Do **not** invent metrics in README. If local `artifacts/m3/` is missing,
+  point to `docs/m3_failure_notes.md` only.
+- Large binary / panel dumps under `artifacts/m3/panels/` are **local only**
+  (do not commit large artifacts).
+
+## Claim discipline (v1)
+
+- Compare and claim wins **vs LOCF and linear only** (M3 required methods).
+- **No CSDI / BRITS / Transformer win claim** — stronger baseline remains
+  **deferred for v1** (same as M3 / `docs/EVAL.md`).
+- **Irregular-time as first-class SDE dynamics is deferred for v1.** State
+  this next to the method wedge in README, not only in fine print. v1 uses
+  resample / bin → regular grid + masks (M2–M4).
+- PhysioNet ICU-style data is **motivation / future only** for v1 — do **not**
+  claim PhysioNet was run for the shipped portfolio.
+- Prefer the locked summary from `docs/m3_failure_notes.md`: TimeFill is the
+  better **probabilistic** imputer vs LOCF / linear (CRPS + coverage); point
+  MAE is competitive and wins on block gaps; it does not dominate linear on
+  easy short-gap MCAR.
+
+## Target README TOC (M5)
+
+Hero → problem → method (short) → evidence → demo → reproduce →
+assumptions / limits → citations.
+
+Evidence presentation (later WPs; not a full rewrite in WP0):
+
+- Inline: **summary claim** + a **compact highlight** (recommend block
+  `block_len=8` and/or MCAR 50% CRPS / coverage rows) **or** a small table
+  subset.
+- Full grid + shortfalls: link to `docs/m3_failure_notes.md` (and optionally
+  `artifacts/m3/metrics_by_rate.csv` for local repro).
+
+## Asset inventory (portfolio)
+
+| Asset | Role |
+|---|---|
+| `docs/m3_failure_notes.md` | Claim checklist, full results table, win/lose notes |
+| `artifacts/m3/metrics_by_rate.csv` | Machine-readable metrics (local / gitignored) |
+| `artifacts/m3/panels/` | Qualitative panels (local; do not commit large dumps) |
+| `streamlit run app/streamlit_app.py` | M4 demo entrypoint |
+| `docs/EVAL.md` | Frozen eval / schema / M3 run contract |
+| `ASSUMPTIONS.md` | Tensor / mask / milestone contracts (this file) |
+
+## Required Limitations themes (eventual README)
+
+README Limitations (later WP) must cover at least:
+
+1. Regular-grid windows after resample; irregular wall-clock SDE dynamics deferred.
+2. Comparison scope: LOCF / linear only; no stronger baseline in v1.
+3. MAE shortfalls vs linear on easy short-gap MCAR (honest M3 notes).
+4. Compute / latency: sampler `K` and solver steps; M4 UI caps vs M3 report settings.
+5. Domain: Beijing air-quality `F = 6` pretrained path; schema not silently remapped.
+6. PhysioNet / healthcare irregular story not part of the v1 evidence run.
+
+## Banned phrases / overclaims (v1 README and portfolio copy)
+
+Do **not** use language that asserts or implies:
+
+- “irregular-time SDE complete” / “first-class irregular-time dynamics shipped”
+- “beats CSDI” / “outperforms CSDI” / “better than CSDI / BRITS / Transformer”
+- “SOTA on PhysioNet” / “PhysioNet results” / “evaluated on PhysioNet” (v1)
+- “first ever score-based / diffusion imputer”
+- “calibrated uncertainty” without tying to reported coverage (and M3 notes)
+- “production-ready” / “deployed at scale” (v1 is a research + demo portfolio)
+
+Allowed framing examples: “CSDI-style conditional imputation objective”;
+“continuous-time VP-SDE + Diffrax wedge”; “irregular-time **deferred for v1**”;
+“vs LOCF / linear on the M3 test protocols.”
+
+## Out of scope for M5
+
+- Stretch goals from `plan.md` (true irregular-time Neural SDE encoder–decoder,
+  block-gap curriculum, constrained imputation, privacy / memorization checks).
+- Redefining `F`, the missing-value sentinel, or mask composition.
+- New training runs or changing M2/M3 report defaults as an M5 exit criterion.
+- Regressing the M4 Streamlit app or the M3 benchmark path.
+- M5 closure is docs-only (citations, hygiene, exit checklist); no new `src/`.

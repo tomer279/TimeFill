@@ -243,8 +243,8 @@ benchmark runner (WP2). The reported edge value equals `FeatureScaler.mean[f]`.
 
 Irregular wall-clock time as first-class SDE dynamics stays deferred. M3 uses
 the M2 regular grid plus masks. Streamlit product details are M4 (see below).
-Portfolio polish beyond an M3 runbook is M5. Stronger baseline (CSDI / BRITS /
-Transformer) is deferred for v1.
+Portfolio polish (**M5**) is shipped in `README.md`. Stronger baseline
+(CSDI / BRITS / Transformer) is deferred for v1.
 
 ## M4 demo note (product layer)
 
@@ -263,5 +263,8 @@ SDE dynamics remains deferred (timestamps for resample / display only).
 
 - Implementing the benchmark runner and baseline code (later M3 work packages;
   the report contract is **M3 run contract** above)
-- Full portfolio README rewrite (**M5**)
+- Portfolio README rewrite (**M5**) — **shipped**; see `README.md`
 - M4 Streamlit UI lives under `app/` (schema contract above); not redefined here
+
+**Portfolio summary (after M5):** narrative metrics and demo pointers live in
+`README.md`; this file remains the evaluation / schema contract.

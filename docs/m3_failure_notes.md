@@ -80,3 +80,7 @@ Qualitative panel: `artifacts/m3/panels/comparison_timefill_locf_linear.png`
 linear flatten; held-out targets generally fall inside the TimeFill band.
 Supports the CRPS / coverage story even when aggregate MAE still slightly
 trails linear on easy MCAR.
+
+Optional portfolio copy (git-friendly; do not commit large `artifacts/`):
+`docs/figures/m3_comparison_panel.png` — same image, for README embed.
+Not required for the filled claim table above.

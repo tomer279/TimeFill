@@ -1,163 +1,168 @@
 # TimeFill
 
-Probabilistic missing-value imputation for multivariate time series —
-with uncertainty bands, not just point estimates.
+**Messy multivariate CSV → probabilistic fills with uncertainty bands**
+(mean ± quantiles), not point-only interpolants.
 
-Under the hood: a continuous-time (VP-SDE) score-based model in
-JAX / Equinox / Diffrax / Optax.
+Point imputers hide uncertainty and can break autocorrelation /
+cross-correlation structure. TimeFill targets data scientists who need
+dependence-aware fills and bands they can inspect and download.
 
-## Milestone 1 status
+## Product north star
 
-**M1 — Toy path (Phases 0–3 on synthetic data)** is complete and kept green:
+**Destination (not claimed as shipped in v1):** a **universal** imputation
+workflow — upload an arbitrary messy multivariate CSV → **train / adapt a
+model on that data** → fill gaps → download completed series with uncertainty
+bands. Optionally **route by gap regime** (small / medium / large contiguous
+gaps) so short holes can use a light policy and long blocks use a heavier
+score-SDE (or specialist) imputer.
 
-- Fixed-length regular-grid windows (`T=64`, `F ∈ {1,2,3}`)
-- MCAR random + contiguous block masks
-- VP-SDE forward process + conditional temporal score net
-- Conditional DSM training with checkpoints / loss curves
-- Diffrax reverse-SDE multi-sample imputation
-- Lightweight masked MAE / RMSE / CRPS / coverage + artifact plots
+**v1 (what this repo proves today):** that stack works end-to-end on one real
+path — UCI Beijing air-quality (`F=6`), pretrained M2 checkpoint, Streamlit
+demo with **exact schema** (no silent remaps), and honest LOCF / linear
+evidence. Train-on-upload, schema-agnostic CSV, and gap-size routing remain
+**post-v1** (see Future work).
 
-LOCF / linear baseline tables are under Milestone 3; the Streamlit product
-is Milestone 4 below. Stronger baseline is deferred for v1.
+## Method (short)
 
-See `ASSUMPTIONS.md` for the locked tensor / mask / sentinel contract and
-`docs/milestone_1_walkthorugh.md` for the work-package walkthrough.
+Conditional **VP-SDE** score model (observed-context conditioning via values +
+mask). Training: continuous-time denoising score matching. Inference: **Diffrax**
+reverse-SDE sampling; draw **K** trajectories → posterior mean and quantile
+bands. Stack: **JAX / Equinox / Diffrax / Optax**.
 
-## Milestone 2 status
+## Positioning vs CSDI
 
-**M2 — Real data train** on **UCI Beijing Multi-Site Air-Quality**
-(Zhang et al.; see `docs/EVAL.md`).
+**Shared goal** with CSDI (Tashiro et al.): probabilistic multivariate
+imputation, self-supervised masking, observation+mask conditioning, multi-sample
+means and uncertainty bands.
 
-**What works**
-- Prepare → train → val-impute path on hourly regular-grid windows
-  (`T=64`, `F=6`: PM2.5, PM10, SO2, NO2, CO, O3)
-- Native + artificial mask composition: `m_train = m_native * m_artificial`
-- Train-only `FeatureScaler`; DSM in normalized space; metrics / plots in
-  **original units**
-- Stable DSM training with checkpoints, loss curves, and val snapshots under
-  `artifacts/m2/`
-- Checkpoint reverse-SDE imputation + lightweight MAE / RMSE / CRPS /
-  coverage_50 / coverage_90 on artificial targets with ground truth
+**Wedge for this repo:** continuous-time VP-SDE + Diffrax reverse sampling + a
+Streamlit product path (upload → bands → download), with a frozen eval contract
+in `docs/EVAL.md`.
 
-**Deferred (do not advertise as done)**
-- Irregular wall-clock as **first-class SDE dynamics** (resample / bin →
-  regular windows + masks only; see `ASSUMPTIONS.md`)
-- Stronger baseline (CSDI / BRITS / Transformer) **deferred for v1**
-- Portfolio polish beyond this runbook (**M5**)
+**Deferred for v1 (stated with the wedge):** irregular wall-clock time as
+**first-class SDE dynamics**. Shipped path is resample / bin → regular-grid
+windows + masks. Do not read “continuous-time” as “irregular-time complete.”
 
-**Later milestones (shipped below):** LOCF / linear tables → Milestone 3;
-Streamlit product → Milestone 4.
+PhysioNet-style ICU series motivate the broader problem; **v1 evidence is not
+a PhysioNet run** (Beijing air-quality path; see `docs/EVAL.md`).
 
-Contracts: `ASSUMPTIONS.md` (M1 + M2), evaluation freeze: `docs/EVAL.md`,
-walkthrough: `docs/milestone_2_walkthrough.md`.
+## What’s in the box
 
-## Milestone 3 status
+- **Toy + real train path** — synthetic M1; UCI Beijing M2 (`F=6`, `T=64`)
+- **Evidence (M3)** — TimeFill vs LOCF / linear; see **Evidence** below and
+  `docs/m3_failure_notes.md`
+- **Demo (M4)** — see **Clone → demo** (local M2 checkpoint + Streamlit)
+- **Metrics reproduce** — see **Clone → metrics** (optional full M3 table)
+- **Contracts** — `ASSUMPTIONS.md` (incl. Milestone 5 portfolio rules),
+  `docs/EVAL.md`
 
-**M3 — Benchmark** (Phase 4 evidence layer) on the frozen M2 Beijing path.
+Milestone walkthroughs and contracts are linked in **Docs appendix**.
 
-**What works**
-- Same held-out protocols and metric cells as `docs/EVAL.md` /
-  `ASSUMPTIONS.md` (M3): MCAR **10% / 30% / 50%**, optional contiguous
-  block (`block_len` 8)
-- Methods: **TimeFill** (VP-SDE + Diffrax, multi-sample) vs **LOCF** and
-  **linear** (point fills; degenerate `K = 1` for CRPS / coverage columns)
-- Report split: **test** (val only via `--smoke`); artifacts under
-  `artifacts/m3/` (`metrics_by_rate.csv` / `.json`, `panels/`)
-- Metrics in **original units** via `FeatureScaler.inverse_transform`
+## Evidence
 
-**Claims (vs LOCF / linear only)**
-- Target: beat LOCF / linear on **CRPS** and **coverage** where the
-  comparison is meaningful; stay **competitive on MAE**.
-- Fill real numbers into `docs/m3_failure_notes.md` after a full test run
-  (see Failure notes under How to run (M3)). Do **not** claim a win vs
-  CSDI / BRITS / Transformer — that stronger baseline is **deferred for v1**.
+**Source of truth:** `docs/m3_failure_notes.md` (filled from
+`artifacts/m3/metrics_by_rate.csv` on a **test**-split M3 run). Contracts:
+`docs/EVAL.md`, `ASSUMPTIONS.md`. Comparison scope: TimeFill vs **LOCF and
+linear only** — no claim vs CSDI / BRITS / Transformer.
 
-**Deferred (do not advertise as done)**
-- Irregular wall-clock as **first-class SDE dynamics** (same as M2;
-  regular grid + masks only)
-- Stronger baseline (CSDI-style / BRITS / Transformer) **deferred for v1**
-- Portfolio polish beyond this M3 runbook (**M5**)
+### Protocol
 
-Streamlit product → **Milestone 4** below.
+- Split: `test`
+- Missingness: MCAR rates **10% / 30% / 50%**; contiguous **block_len = 8**
+- Units: metrics in **original** (unnormalized) units
+- Score cells: `m_native == 1` and `m_artificial == 0` (held-out artificial
+  gaps with ground truth)
+- Seeds: `mask=0`, `sample=1`
+- TimeFill: `K_samples=50`; LOCF / linear: degenerate `K=1`
 
-Contracts: `ASSUMPTIONS.md` (M1–M3), `docs/EVAL.md` (M3 run contract),
-walkthrough: `docs/milestone_3_walkthrough.md`.
+### Headline results
 
-## Milestone 4 status
+| method | protocol | rate / block | mae | rmse | crps | coverage_50 | coverage_90 |
+|---|---|---|---:|---:|---:|---:|---:|
+| timefill | mcar | 0.10 | 35.01 | 159.68 | 26.20 | 0.596 | 0.901 |
+| locf | mcar | 0.10 | 42.71 | 168.70 | 42.71 | 0.177 | 0.177 |
+| linear | mcar | 0.10 | 33.02 | 141.35 | 33.02 | 0.120 | 0.120 |
+| timefill | mcar | 0.30 | 39.01 | 165.34 | 29.19 | 0.578 | 0.901 |
+| locf | mcar | 0.30 | 49.18 | 196.10 | 49.18 | 0.162 | 0.162 |
+| linear | mcar | 0.30 | 37.45 | 161.23 | 37.45 | 0.103 | 0.103 |
+| timefill | mcar | 0.50 | 46.03 | 174.57 | 34.36 | 0.540 | 0.892 |
+| locf | mcar | 0.50 | 58.61 | 228.00 | 58.61 | 0.146 | 0.146 |
+| linear | mcar | 0.50 | 45.76 | 188.03 | 45.76 | 0.086 | 0.086 |
+| timefill | block | 8 | 64.87 | 246.20 | 49.79 | 0.430 | 0.811 |
+| locf | block | 8 | 93.57 | 328.29 | 93.57 | 0.104 | 0.104 |
+| linear | block | 8 | 68.46 | 249.40 | 68.46 | 0.045 | 0.045 |
 
-**M4 — Product** (Phase 5 Streamlit layer): bundled sample or upload →
-reverse-SDE impute → mean ± bands → download mean-fill CSV (original units).
+Full table + claim checklist: [`docs/m3_failure_notes.md`](docs/m3_failure_notes.md).
 
-**What works**
-- Pretrained M2 checkpoint + scaler only (no training in the happy path)
-- Schema: frozen `F = 6` Beijing columns (`docs/EVAL.md`); exact names; no
-  silent remaps
-- Latency defaults in `configs/app_m4.yaml`: `K=8`, `solver_steps=20`,
-  `smoke.max_windows=4` (smaller than M3 report settings)
-- UI: missingness summary, Plotly mean ± bands, optional sample overlay,
-  mean-fill + optional multi-sample long CSV
-- Optional “Quick quality check” = **smoke slice only** (not the M3 report)
-- Non-UI smoke: `python scripts/run_m4_impute_sample.py --config configs/app_m4.yaml`
+**Summary:** TimeFill is the better **probabilistic** imputer vs LOCF / linear
+(CRPS and coverage on all four protocols). Point MAE is competitive and wins
+on long/block gaps; it does **not** dominate linear on easy short-gap MCAR
+(MAE trails linear at MCAR 10%: 35.01 vs 33.02; MCAR 30%: 39.01 vs 37.45).
 
-**Explicitly deferred**
-- On-the-fly fine-tune in the UI (**deferred for v1**; pretrained only)
-- Irregular wall-clock as first-class SDE dynamics (timestamps for
-  resample / display only; regular grid + masks)
-- Full M3 benchmark grid in the app → use `scripts/run_m3_benchmark.py`
-- Portfolio polish / full README rewrite (**M5**)
+**Qualitative figure:** optional git-friendly copy under `docs/figures/`
+(not committed in v1). After a local M3 run, the panel is at
+`artifacts/m3/panels/comparison_timefill_locf_linear.png` (held-out gaps,
+original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
+`docs/figures/m3_comparison_panel.png` and embed it here with caption
+“held-out gaps, original units.” Do not commit large `artifacts/` dumps.
 
-Contracts: `ASSUMPTIONS.md` (Milestone 4), `docs/EVAL.md` (M4 demo note),
-walkthrough: `docs/milestone_4_walkthrough.md`.
+## Limitations
 
-### How to run (M4)
+- **Regular grid, not irregular Δt:** windows + masks after hourly binning;
+  irregular wall-clock as first-class SDE dynamics is **deferred** for v1.
+- **Beijing-only evidence:** UCI Multi-Site Air-Quality (`F=6`); PhysioNet
+  not run for v1.
+- **Baselines = LOCF / linear:** stronger baseline (e.g. CSDI) deferred; do
+  not read this table as a win vs those methods.
+- **MAE shortfall on easy MCAR:** still ~2 points behind linear at MCAR 10%
+  and 30%; CRPS / coverage remain the intended differentiators.
+- **Streamlit ≠ M3 report settings:** app defaults `K_samples=8`,
+  `solver_steps=20` (and ≤4 windows); M3 report uses `50` / `100`
+  (`configs/bench_m3.yaml` vs `configs/app_m4.yaml`).
+- **CPU vs GPU:** full M3 / M2 defaults are slow on CPU; GPU optional via a
+  matching JAX CUDA build. Demo targets a few minutes on CPU with smoke caps.
+- **Point-baseline CRPS / coverage are degenerate `K=1`:** CRPS ≈ absolute
+  error; interval width 0 — not calibrated probabilistic scores.
 
-Prerequisites: core install plus the Streamlit extra, and M2 artifacts.
+## Clone → demo
+
+Local M2 checkpoint + scaler required (no hosted weights for v1). Latency
+defaults are locked in `configs/app_m4.yaml` (`K_samples=8`,
+`solver_steps=20`, `smoke.max_windows=4`). Fine-tune-in-UI is not shipped.
+
+Fetch Beijing CSVs first (see How to run (M2)), then:
 
 ```bash
+pip install -e .
 pip install -e ".[app]"
-```
 
-#### 1) M2 artifacts (once)
-
-```bash
 python scripts/prepare_m2_data.py --config configs/real_m2.yaml
 python scripts/train_m2_real.py --config configs/real_m2.yaml
-```
+# Expect:
+#   artifacts/m2/checkpoints/best_score_net.eqx
+#   artifacts/m2/checkpoints/feature_scaler.npz
 
-Expect:
-
-- `artifacts/m2/checkpoints/best_score_net.eqx`
-- `artifacts/m2/checkpoints/feature_scaler.npz`
-
-Missing checkpoint / scaler / feature-count mismatch fails fast with a clear
-message (paths are locked in `configs/app_m4.yaml`).
-
-#### 2) Launch the demo
-
-```bash
 streamlit run app/streamlit_app.py
 ```
 
-In the app: choose the bundled sample (or upload a CSV with the frozen
-columns) → **Fill missing values** → inspect mean ± bands → download the
-mean-fill CSV. Optional: multi-sample long CSV; **Run a quick quality check**
-(smoke only).
+In the app: bundled sample or upload → **Fill missing values** → mean ± bands
+→ download. CPU/GPU and window-batching notes: How to run (M4).
 
-#### 3) Compute limits (CPU vs GPU)
+## Clone → metrics (optional)
 
-- **CPU:** defaults (`K=8`, `solver_steps=20`, ≤4 windows via
-  `smoke.max_windows`) target a few minutes. Raising `K` / steps toward M3
-  report settings (`50` / `100` in `configs/bench_m3.yaml`) is much slower.
-- **GPU:** optional. Install a matching JAX CUDA build (see Install →
-  JAX: CPU vs CUDA); same config, shorter wall time.
-- **Window batching:** the UI processes at most `smoke.max_windows`
-  (default **4**). Longer uploads need another run or a deliberate cap
-  increase in `configs/app_m4.yaml`.
-
-Config: `configs/app_m4.yaml`. Full benchmark tables remain:
+Reproduce the frozen LOCF / linear comparison (test split; slow on CPU at full
+defaults). Claim table:
+[`docs/m3_failure_notes.md`](docs/m3_failure_notes.md).
 
 ```bash
+# After M2 artifacts exist (same prepare + train as Clone → demo):
 python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml
+```
+
+CPU smoke (debug only — not the report table):
+
+```bash
+python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml --smoke
 ```
 
 ## Install
@@ -175,6 +180,12 @@ python -m venv .venv
 
 python -m pip install --upgrade pip
 pip install -e .
+```
+
+For the Streamlit demo, also install the app extra:
+
+```bash
+pip install -e ".[app]"
 ```
 
 This installs the project in editable mode and pulls CPU-friendly defaults for
@@ -365,27 +376,129 @@ python scripts/run_m3_benchmark.py --config configs/bench_m3.yaml --smoke
 
 - `scripts/run_m3_benchmark.py` — end-to-end comparison runner
 - `pytest tests/test_baselines_locf_linear.py tests/test_m3_benchmark_helpers.py -q`
-- Failure-note template: `docs/m3_failure_notes.md`
+- Filled claim table + win/lose notes: `docs/m3_failure_notes.md`
 
-### Failure notes (expected win / lose vs LOCF / linear)
+### Failure notes (vs LOCF / linear — filled)
 
-Paste numbers from `artifacts/m3/metrics_by_rate.csv` after a **test** run
-into `docs/m3_failure_notes.md`. Hypotheses until then:
+Frozen from a **test**-split M3 run in
+[`docs/m3_failure_notes.md`](docs/m3_failure_notes.md) (source:
+`artifacts/m3/metrics_by_rate.csv`). Re-paste from that CSV if you re-run
+the full benchmark and numbers change.
 
-| Regime | Expect TimeFill | Why |
+| Regime | Observed (TimeFill) | Notes |
 |---|---|---|
-| Long contiguous blocks | Win on CRPS / coverage; MAE mixed | Uncertainty bands; LOCF/linear extrapolate poorly across long gaps |
-| High MCAR (50%) | Win on CRPS / coverage; MAE competitive | Multi-feature context; point methods ignore cross-channel structure |
-| Sparse / heavily native-missing features | Lose or tie on MAE | Edge policy falls back to train-feature mean; little context for the score net |
-| Short interior gaps / low MCAR (10%) | Competitive MAE; CRPS edge smaller | Linear / LOCF already strong on short gaps |
+| Long contiguous blocks (`block_len=8`) | Win CRPS / coverage; MAE beats LOCF and linear | Uncertainty bands; point methods extrapolate poorly across long gaps |
+| High MCAR (50%) | Win CRPS / coverage; MAE near-tie with linear | Cross-feature context; RMSE better than both point methods |
+| Short-gap MCAR (10% / 30%) | Win CRPS / coverage; MAE trails linear ~2 pts | Linear already strong on short interior gaps |
+| Sparse / heavily native-missing features | Risk of lose/tie on MAE | Edge policy falls back to train-feature mean (see ASSUMPTIONS / EVAL) |
 
 **Claim discipline:** report vs **LOCF and linear only**. No overclaim vs
-CSDI (stronger baseline deferred for v1). If CRPS / coverage or MAE fall
-short of the M3 target, document the shortfall in the failure notes — do
-not paper over it.
+CSDI (stronger baseline deferred for v1). Keep shortfalls in
+`docs/m3_failure_notes.md` — do not paper over them.
+
+## How to run (M4)
+
+Prerequisites: `pip install -e ".[app]"` and M2 artifacts (see **Clone →
+demo**). Paths are locked in `configs/app_m4.yaml`.
+
+### 1) M2 artifacts (once)
+
+```bash
+python scripts/prepare_m2_data.py --config configs/real_m2.yaml
+python scripts/train_m2_real.py --config configs/real_m2.yaml
+```
+
+Expect:
+
+- `artifacts/m2/checkpoints/best_score_net.eqx`
+- `artifacts/m2/checkpoints/feature_scaler.npz`
+
+Missing checkpoint / scaler / feature-count mismatch fails fast with a clear
+message.
+
+### 2) Launch the demo
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+In the app: choose the bundled sample (or upload a CSV with the frozen
+columns) → **Fill missing values** → inspect mean ± bands → download the
+mean-fill CSV. Optional: multi-sample long CSV; **Run a quick quality check**
+(smoke only).
+
+### 3) Compute limits (CPU vs GPU)
+
+- **CPU:** defaults (`K=8`, `solver_steps=20`, ≤4 windows via
+  `smoke.max_windows`) target a few minutes. Raising `K` / steps toward M3
+  report settings (`50` / `100` in `configs/bench_m3.yaml`) is much slower.
+- **GPU:** optional. Install a matching JAX CUDA build (see Install →
+  JAX: CPU vs CUDA); same config, shorter wall time.
+- **Window batching:** the UI processes at most `smoke.max_windows`
+  (default **4**). Longer uploads need another run or a deliberate cap
+  increase in `configs/app_m4.yaml`.
+
+Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
+
+## Docs appendix
+
+- [`ASSUMPTIONS.md`](ASSUMPTIONS.md) — M1–M5 contracts
+- [`docs/EVAL.md`](docs/EVAL.md) — eval / mask / split protocol
+- [`docs/milestone_1_walkthorugh.md`](docs/milestone_1_walkthorugh.md)
+- [`docs/milestone_2_walkthrough.md`](docs/milestone_2_walkthrough.md)
+- [`docs/milestone_3_walkthrough.md`](docs/milestone_3_walkthrough.md)
+- [`docs/milestone_4_walkthrough.md`](docs/milestone_4_walkthrough.md)
+- [`docs/milestone_5_walkthrough.md`](docs/milestone_5_walkthrough.md)
+
+## Future work
+
+Post-v1 stretch only (not claimed as shipped). Roadmap toward the **product
+north star** above — not a new M6+ DoD unless scheduled later:
+
+- **Train-on-upload (universal path):** accept a user’s messy CSV (beyond the
+  frozen Beijing `F=6` schema), infer columns / masks, **train or fine-tune
+  on that file**, then impute and download. v1 Streamlit stays pretrained-only
+  + exact column names.
+- **Gap-regime routing (small / medium / large):** detect gap length and choose
+  a policy — e.g. light / point methods for short holes, full TimeFill (or a
+  long-gap specialist) for medium and large blocks; optionally train
+  specialists or a block-gap curriculum rather than one model for all regimes.
+- **Schema-flexible ingest:** column mapping, timestamps, pad/truncate, and
+  clear errors when the series is too short / sparse to train.
+- **Stronger baselines / alternate imputers:** CSDI / BRITS / Transformer (or
+  similar) as measuring sticks or optional backends — comparison only until
+  evidence exists; no win claimed by default.
+- **Hosted checkpoint:** downloadable M2 weights + scaler so clone → demo does
+  not require a local full train (still Beijing-scoped unless a generalist
+  ships).
+- **Second domain:** PhysioNet-style or other multivariate series as additional
+  evidence (motivation only in v1).
+- True irregular-time latent Neural SDE encoder–decoder
+- Constrained imputation (business / physical bounds) during reverse sampling
+- Privacy / memorization checks if synthetic export is emphasized
+
+## References
+
+1. Tashiro, Y., Song, J., Song, Y., & Ermon, S. (2021). CSDI: Conditional
+   Score-based Diffusion Models for Probabilistic Time Series Imputation.
+   *NeurIPS 2021*.
+2. Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., &
+   Poole, B. (2021). Score-Based Generative Modeling through Stochastic
+   Differential Equations. *ICLR 2021*.
+3. Kidger, P. (2021–). Diffrax / Neural CDE ecosystem (continuous-time
+   numerics in JAX). https://github.com/patrick-kidger/diffrax
+4. Zhang, S., Guo, B., Dong, A., He, J., Xu, Z., & Chen, S. X. (2017).
+   Cautionary tales on air-quality improvement in Beijing. *Proc. R. Soc. A*,
+   473, 20170457. Dataset: Beijing Multi-Site Air-Quality (UCI ML Repository,
+   id 501; https://doi.org/10.24432/C5RK5G).
+5. Oh, Y., Lim, D., & Kim, S. (2024). Stable Neural Stochastic Differential
+   Equations in Analyzing Irregular Time Series Data. *ICLR 2024*.
+   (Motivation for irregular-time modeling; not a v1 evaluation dataset.)
+6. Silva, I., Moody, G., Scott, D. J., Celi, L. A., & Mark, R. G. PhysioNet
+   ICU multiparameter time-series resources. (Motivation / future evidence
+   path only; **not** run for v1.)
 
 ## License
 
 Unless otherwise noted, this project is released under the MIT License — see
-`LICENSE`. Replace this section if you choose a different SPDX license before
-publishing.
+`LICENSE.txt`.

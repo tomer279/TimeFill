@@ -3,9 +3,18 @@
 ## Objective
 Build a continuous-time, score-based diffusion model (SDE-based) that performs
 **probabilistic imputation** on irregular / missing multivariate time series, and
-optionally exports synthetic trajectories. The product goal is a data-science
-workflow: upload a messy CSV → obtain dependence-aware fills with calibrated
-uncertainty bands → download a completed dataset.
+optionally exports synthetic trajectories.
+
+**Product north star (post-v1):** a **universal** data-science workflow —
+upload an arbitrary messy multivariate CSV → **train / adapt a model on that
+data** → fill gaps with dependence-aware uncertainty bands → download a
+completed dataset. Optionally **route by gap regime** (small / medium / large
+contiguous gaps): light policies for short holes; heavier score-SDE (or
+specialist) imputers for long blocks.
+
+**v1 scope (shipped DoD):** prove the SDE stack on one real path (Beijing
+air-quality, `F=6`), pretrained demo + LOCF/linear evidence. Train-on-upload,
+schema-agnostic CSV, and gap-size routing are **not** v1 exit criteria.
 
 **Tech stack:** Python, JAX, Equinox, Diffrax, Optax, Streamlit, Matplotlib / Plotly.
 
@@ -15,7 +24,7 @@ distribution over missing values—not only point estimates.
 
 **Non-goals (v1):** Differentially private training, production-scale distributed
 training, beating every SOTA paper on every dataset, causal treatment-effect
-estimation.
+estimation, universal train-on-upload as a shipped product claim.
 
 **Positioning:** CSDI-style conditional imputation objective, implemented and
 extended as an explicit continuous-time score-SDE system with irregular-time
@@ -221,6 +230,21 @@ notebooks/       # optional exploration only
 - Block-gap curriculum and longer horizons
 - Constrained imputation (business / physical bounds) during reverse sampling
 - Simple privacy risk discussion (memorization checks) if synthetic export is emphasized
+
+## Post-v1 roadmap (not v1 DoD)
+
+Ideas only; see README **Product north star** / **Future work**. Not
+milestones unless scheduled later:
+
+- **Train-on-upload:** schema-flexible CSV → train / fine-tune on the user’s
+  file → impute → download (beyond frozen Beijing `F=6` pretrained path)
+- **Gap-regime routing:** small / medium / large gap policies or specialists
+  (plus block-gap curriculum / longer horizons)
+- Stronger baselines or optional imputers (CSDI / BRITS / Transformer) for
+  comparison — no win claimed until measured
+- Hosted M2 checkpoint + scaler for clone → demo without local full train
+- Second-domain evidence (e.g. PhysioNet-style), still separate from v1 Beijing
+  claim scope
 
 ## Relation to Prior Art (CSDI)
 

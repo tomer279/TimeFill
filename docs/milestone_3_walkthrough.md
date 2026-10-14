@@ -11,7 +11,11 @@ M3 is Phase 4 — the **evidence layer**. It reuses the M2 real-data path (Beiji
 **Success look:**  
 Load processed windows + M2 checkpoint → run MCAR **10% / 30% / 50%** (and optional block) on a frozen held-out split → impute with TimeFill, LOCF, and linear → write comparison tables + qualitative panels under `artifacts/m3/`.
 
-**Explicitly deferred:** Streamlit (**M4**), portfolio polish beyond an M3 runbook (**M5**). Irregular wall-clock as first-class SDE dynamics stays deferred (same as M2) unless you explicitly promote it.
+**Explicitly deferred at M3 write-time:** Streamlit (**M4**). Portfolio polish
+beyond an M3 runbook (**M5**) is **shipped** — see
+`docs/milestone_5_walkthrough.md` / `README.md`. Irregular wall-clock as
+first-class SDE dynamics stays deferred (same as M2) unless you explicitly
+promote it.
 
 ---
 

@@ -639,8 +639,8 @@ def _render_charts(
         samples=samples,
         feature_name=feature_name,
     )
-    st.plotly_chart(figure_original_with_gaps(request), use_container_width=True)
-    st.plotly_chart(figure_imputed_mean_bands(request), use_container_width=True)
+    st.plotly_chart(figure_original_with_gaps(request), width="stretch")
+    st.plotly_chart(figure_imputed_mean_bands(request), width="stretch")
 
 
 def _render_downloads(
@@ -722,7 +722,7 @@ def _render_demo_eval(
         rows = smoke.as_rows()
         st.dataframe(
             pd.DataFrame(rows, columns=["Metric", "Value"]),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption(smoke.caption())
 
@@ -790,7 +790,7 @@ def main() -> None:
         f"{config.schema.n_features} pollutants"
     )
     st.caption("Missingness in your file (before simulated gaps):")
-    st.dataframe(payload.missingness_table(), use_container_width=True)
+    st.dataframe(payload.missingness_table(), width="stretch")
     if st.button("Fill missing values", type="primary"):
         with st.spinner("Filling gaps… this can take a few minutes on CPU."):
             result = imputer.impute(

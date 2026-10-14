@@ -11,7 +11,9 @@ M2 takes the M1 loop (VP-SDE → conditional score net → DSM train → Diffrax
 **Success look:**  
 Load / window real CSV → apply M1 mask protocols (plus native missingness) → train → reverse-sample on a fixed val batch → save loss curves + imputation snapshots under `artifacts/m2/`.
 
-**Explicitly deferred:** LOCF / linear / CSDI baseline tables (**M3**), Streamlit (**M4**), portfolio polish (**M5**).
+**Explicitly deferred at M2 write-time:** LOCF / linear / CSDI baseline tables
+(**M3**), Streamlit (**M4**). Portfolio polish (**M5**) is **shipped** — see
+`docs/milestone_5_walkthrough.md` / `README.md`.
 
 ---
 

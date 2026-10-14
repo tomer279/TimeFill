@@ -18,7 +18,8 @@ interactive mean ± bands (optional sample overlay) → download imputed CSV
 (mean fill; optional multi-sample long format). A “run evaluation on demo
 dataset” control may reproduce a **small** M3-style benchmark slice.
 
-**Explicitly deferred:** Portfolio polish / full README rewrite (**M5**).
+**Explicitly deferred at M4 write-time:** full README rewrite was **M5** —
+now **shipped** (see `docs/milestone_5_walkthrough.md` / `README.md`).
 True irregular-time SDE dynamics stay deferred (same as M2/M3) unless you
 explicitly promote them. On-the-fly fine-tune in the UI is optional and must
 not block the pretrained demo path.
@@ -162,7 +163,8 @@ streamlit run app/streamlit_app.py
   `feature_scaler.npz`, bundled sample path, default `K`, solver steps, seeds.
 - Decide and document: pretrained-only vs fine-tune; pad/truncate policy;
   demo-eval slice size.
-- Optional one-paragraph “How to run (M4)” stub in README (full polish is M5).
+- Optional one-paragraph “How to run (M4)” stub in README (full polish was M5;
+  now shipped).
 
 **Done when:** M4 assumptions + `app_m4.yaml` exist; no Streamlit UI required yet.
 

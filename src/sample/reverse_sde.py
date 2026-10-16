@@ -636,19 +636,12 @@ def _integrate_reverse(
     t1 = sde.t_diff - settings.t_eps
     step_dt = t1 / float(settings.solver_steps)
     y0_flat = pack.flat_state()
-    n_flat = int(y0_flat.shape[0])
-    brownian = VirtualBrownianTree(
-        t0,
-        t1,
-        tol=step_dt * _BM_TOL_FRACTION,
-        shape=(n_flat,),
-        key=key,
-    )
-    drift_fn = _make_drift_fn(model, sde, pack)
-    diffusion_fn = _make_diffusion_fn(sde, pack.mask)
-    terms = MultiTerm(
-        ODETerm(drift_fn),
-        ControlTerm(diffusion_fn, brownian),
+    terms = _reverse_multiterm(
+        model,
+        sde,
+        pack,
+        key,
+        (t0, t1, step_dt),
     )
     solution = diffeqsolve(
         terms,
@@ -660,7 +653,81 @@ def _integrate_reverse(
         saveat=SaveAt(t1=True),
         max_steps=int(settings.solver_steps) + _MAX_STEP_SLACK,
     )
-    return solution.ys[-1].reshape(pack.state_0.shape)
+    return _saved_endpoint(solution, pack.state_0.shape)
+
+
+def _reverse_multiterm(
+        model: Any,
+        sde: VPSDE,
+        pack: _ReversePack,
+        key: jax.Array,
+        time_span: tuple[float, float, float],
+) -> MultiTerm:
+    """Build Diffrax ``MultiTerm`` for reverse integration.
+
+    Parameters
+    ----------
+    model : Any
+        Score callable.
+    sde : VPSDE
+        VP-SDE coefficient provider.
+    pack : _ReversePack
+        Window state / observations / mask.
+    key : jax.Array
+        Brownian-tree key.
+    time_span : tuple of float
+        ``(t0, t1, step_dt)`` in reverse-time coordinate.
+
+    Returns
+    -------
+    MultiTerm
+        Drift ODE term plus diffusion control term.
+    """
+    t0, t1, step_dt = time_span
+    n_flat = int(pack.state_0.size)
+    brownian = VirtualBrownianTree(
+        t0,
+        t1,
+        tol=step_dt * _BM_TOL_FRACTION,
+        shape=(n_flat,),
+        key=key,
+    )
+    return MultiTerm(
+        ODETerm(_make_drift_fn(model, sde, pack)),
+        ControlTerm(_make_diffusion_fn(sde, pack.mask), brownian),
+    )
+
+
+def _saved_endpoint(
+        solution: Any,
+        state_shape: tuple[int, ...],
+) -> jnp.ndarray:
+    """Return the last saved Diffrax state, reshaped.
+
+    Parameters
+    ----------
+    solution : Any
+        Diffrax ``diffeqsolve`` result.
+    state_shape : tuple of int
+        Target ``(T, F)`` shape.
+
+    Returns
+    -------
+    jax.Array
+        Endpoint state reshaped to ``state_shape``.
+
+    Raises
+    ------
+    RuntimeError
+        If Diffrax saved no states.
+    """
+    ys = solution.ys
+    if ys is None:
+        raise RuntimeError(
+            "diffeqsolve returned no saved states "
+            "(expected SaveAt(t1=True))"
+        )
+    return ys[-1].reshape(state_shape)
 
 
 def _make_drift_fn(
@@ -689,7 +756,7 @@ def _make_drift_fn(
     x_obs = pack.observations
     missing = 1.0 - mask
 
-    def drift(tau: jnp.ndarray, y_flat: jnp.ndarray, _args: Any) -> jnp.ndarray:
+    def drift(tau: Any, y_flat: Any, _args: Any) -> jnp.ndarray:
         state = y_flat.reshape(mask.shape)
         time = horizon - tau
         score = model(
@@ -725,11 +792,7 @@ def _make_diffusion_fn(sde: VPSDE, mask: jnp.ndarray):
     horizon = sde.t_diff
     missing_flat = (1.0 - mask).reshape((-1,))
 
-    def diffusion(
-            tau: jnp.ndarray,
-            y_flat: jnp.ndarray,
-            _args: Any,
-    ) -> jnp.ndarray:
+    def diffusion(tau: Any, y_flat: Any, _args: Any) -> jnp.ndarray:
         del y_flat
         time = horizon - tau
         _drift_coeff, g_t = sde.sde_coefficients(time)

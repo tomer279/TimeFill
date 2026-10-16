@@ -1,0 +1,50 @@
+# Milestone 6 flexible-ingest contract skeleton (WP0).
+# Thresholds lock ASSUMPTIONS.md (Milestone 6). Not wired to Streamlit in WP0.
+# Exact Beijing demo remains configs/app_m4.yaml.
+#
+# Tensor contract (unchanged): x, m shaped (B, T, F);
+# m: 1=observed, 0=missing; missing x cells use sentinel 0.0.
+# Never infer missingness from nonzero x.
+#
+# Modes:
+#   exact_beijing — pretrained impute OK (M4 path)
+#   flexible      — ingest + preview only until M7 or matching checkpoint
+
+ingest:
+  modes:
+    - exact_beijing
+    - flexible
+  default_mode: auto
+  # auto: Exact when headers match Beijing EVAL order; else Flexible.
+
+window:
+  seq_len: 64
+  # Non-overlapping windows; right-pad short tails / remainders (m=0).
+  max_windows: 4
+
+reject:
+  # min_rows := max(1, seq_len // 4) → 16 when seq_len=64
+  min_rows: 16
+  min_observed_rate_global: 0.10
+  min_observed_rate_per_feature: 0.05
+  max_features: 32
+
+columns:
+  timestamp_aliases:
+    - timestamp
+  entity_aliases:
+    - entity
+    - id
+    - site
+  # features[] are user / inferred; never silently remap to PM2.5…O3.
+
+impute_gate:
+  # Flexible path may preview; block impute unless names+F match loaded
+  # scaler/checkpoint. Message points to M7 / compatible weights.
+  allow_pretrained_on_flexible: false
+  require_exact_feature_match: true
+
+data:
+  fixture_csv: tests/fixtures/toy_non_beijing.csv
+
+# Claim discipline: flexible ingest does not expand docs/EVAL.md Beijing tables.

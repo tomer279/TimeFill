@@ -15,6 +15,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 
 from src.data.masking import block_mask, random_mask
 from src.data.schema import MASK_MISSING, TIME_AXIS
@@ -70,20 +71,14 @@ def save_mask_comparison(
         Path written.
     """
     window = _as_batch(clean)
-    key_random, key_block = jax.random.split(key)
-    x_random, m_random = random_mask(window, mask_rate, key_random)
-    x_block, m_block = block_mask(window, block_len, key_block)
-
-    time = jnp.arange(window.shape[TIME_AXIS])
-    truth = window[_FIRST_BATCH, :, _FIRST_FEATURE]
-    obs_random = x_random[_FIRST_BATCH, :, _FIRST_FEATURE]
-    obs_block = x_block[_FIRST_BATCH, :, _FIRST_FEATURE]
-    miss_random = m_random[_FIRST_BATCH, :, _FIRST_FEATURE] == MASK_MISSING
-    miss_block = m_block[_FIRST_BATCH, :, _FIRST_FEATURE] == MASK_MISSING
-
+    random_series, block_series = _masked_panel_series(
+        window,
+        key,
+        mask_rate,
+        block_len,
+    )
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-
     fig, axes = plt.subplots(
         _N_PANEL_ROWS,
         _N_PANEL_COLS,
@@ -92,28 +87,82 @@ def save_mask_comparison(
     )
     _draw_panel(
         axes[0],
-        {
-            "time": time,
-            "truth": truth,
-            "observed": obs_random,
-            "is_missing": miss_random,
-        },
+        random_series,
         f"random MCAR (rate={mask_rate})",
     )
     _draw_panel(
         axes[1],
-        {
-            "time": time,
-            "truth": truth,
-            "observed": obs_block,
-            "is_missing": miss_block,
-        },
+        block_series,
         f"block (len={block_len})",
     )
     fig.tight_layout()
     save_figure(fig, out)
     plt.close(fig)
     return out
+
+
+def _masked_panel_series(
+        window: jnp.ndarray,
+        key: jax.Array,
+        mask_rate: float,
+        block_len: int,
+) -> tuple[dict[str, jnp.ndarray], dict[str, jnp.ndarray]]:
+    """Build random- and block-mask series dicts for the first feature.
+
+    Parameters
+    ----------
+    window : jax.Array
+        Rank-3 clean batch ``(B, T, F)``.
+    key : jax.Array
+        PRNG key (split internally).
+    mask_rate : float
+        MCAR rate for the random panel.
+    block_len : int
+        Block length for the block panel.
+
+    Returns
+    -------
+    random_series : dict of str to jax.Array
+        Keys ``time``, ``truth``, ``observed``, ``is_missing``.
+    block_series : dict of str to jax.Array
+        Same keys for the block masker.
+    """
+    key_random, key_block = jax.random.split(key)
+    x_random, m_random = random_mask(window, mask_rate, key_random)
+    x_block, m_block = block_mask(window, block_len, key_block)
+    return (
+        _feature_panel_series(window, x_random, m_random),
+        _feature_panel_series(window, x_block, m_block),
+    )
+
+
+def _feature_panel_series(
+        window: jnp.ndarray,
+        x_obs: jnp.ndarray,
+        mask: jnp.ndarray,
+) -> dict[str, jnp.ndarray]:
+    """Slice the first batch/feature into a panel series dict.
+
+    Parameters
+    ----------
+    window : jax.Array
+        Clean batch ``(B, T, F)``.
+    x_obs : jax.Array
+        Masked observations ``(B, T, F)``.
+    mask : jax.Array
+        Observation mask ``(B, T, F)``.
+
+    Returns
+    -------
+    dict of str to jax.Array
+        Keys ``time``, ``truth``, ``observed``, ``is_missing``.
+    """
+    return {
+        "time": jnp.arange(window.shape[TIME_AXIS]),
+        "truth": window[_FIRST_BATCH, :, _FIRST_FEATURE],
+        "observed": x_obs[_FIRST_BATCH, :, _FIRST_FEATURE],
+        "is_missing": mask[_FIRST_BATCH, :, _FIRST_FEATURE] == MASK_MISSING,
+    }
 
 
 def _as_batch(clean: jnp.ndarray) -> jnp.ndarray:
@@ -145,7 +194,7 @@ def _as_batch(clean: jnp.ndarray) -> jnp.ndarray:
 
 
 def _draw_panel(
-        axis: plt.Axes,
+        axis: Axes,
         series: dict[str, jnp.ndarray],
         title: str,
 ) -> None:

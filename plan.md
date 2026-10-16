@@ -190,6 +190,8 @@ notebooks/       # optional exploration only
 ---
 
 ## Milestones and Definition of Done
+
+### v1 (shipped)
 1. **M1 — Toy path:** forward SDE + conditional score net + reverse samples on synthetic sine/AR data with masks.
 2. **M2 — Real data train:** stable training on PhysioNet-style or air-quality windows.
 3. **M3 — Benchmark:** beat LOCF / linear interpolation on CRPS and coverage; competitive MAE.
@@ -201,6 +203,112 @@ notebooks/       # optional exploration only
 - Reported metrics vs at least two baselines
 - Working Streamlit demo on a sample dataset
 - Clear statement of assumptions (windowing, missingness types, compute limits)
+
+### Post-v1 (scheduled)
+Roadmap toward the **product north star** (universal CSV → train/adapt →
+bands → download; optional gap-regime routing). Each milestone has its own
+DoD; v1 Beijing pretrained claims stay frozen unless a milestone explicitly
+extends the eval contract.
+
+6. **M6 — Schema-flexible ingest**
+7. **M7 — Train-on-upload / adapt**
+8. **M8 — Gap-regime routing**
+9. **M9 — Evidence expansion** (pick one primary track; others optional)
+
+Detail, tasks, and exit criteria: **Post-v1 milestones (M6–M9)** below.
+Stretch items (irregular-time Neural SDE, constrained sampling, privacy)
+remain unscheduled until promoted.
+
+---
+
+## Post-v1 milestones (M6–M9)
+
+Working plan for the next slices. README **Future work** stays a short
+product-facing summary and points here for DoD.
+
+### M6 — Schema-flexible ingest
+
+- **Goal:** Accept messy multivariate CSVs beyond the frozen Beijing `F=6`
+  column names, without training or claiming a universal imputer yet.
+- **Tasks:**
+  1. Infer or map feature columns, optional entity/id, and timestamps.
+  2. Build native missingness masks; pad / truncate / window with documented
+     rules (regular grid after binning remains the v1-compatible path).
+  3. Fail clearly when the series is too short, too sparse, or schema-invalid
+     (no silent remaps of unknown columns to Beijing names).
+  4. Unit tests + a small fixture CSV that is *not* the Beijing schema.
+  5. Wire Streamlit (or a CLI) to preview schema / missingness summary before
+     impute; pretrained Beijing path remains available as the exact-schema
+     fallback.
+- **Exit criteria:** Upload (or load) a non-Beijing multivariate CSV → validated
+  windows + masks → clear error messages on reject; docs note that imputation
+  still requires a compatible checkpoint or M7 train-on-upload.
+- **Walkthrough:** `docs/milestone_6_walkthrough.md` when work starts.
+
+### M7 — Train-on-upload / adapt
+
+- **Goal:** On a user CSV (via M6 ingest), **train or fine-tune** a score model
+  on that file, then impute and download mean ± bands.
+- **Tasks:**
+  1. Short adaptation loop (fine-tune from a base checkpoint and/or train-from-
+     scratch on small data) with smoke caps suitable for Streamlit / CPU.
+  2. Fit scaler and masks **train-only** on the uploaded series (or its
+     declared train split); no leakage from held-out artificial gaps used for
+     a quick quality check.
+  3. UI / CLI: run adapt → impute → download; surface compute limits and
+     failure modes (too little data, NaN loss, timeout).
+  4. Keep the v1 pretrained Beijing demo path intact; do not overwrite M2
+     claim artifacts as the sole “universal” model.
+  5. Minimal eval slice: smoke metrics on artificial gaps for the uploaded
+     file (not a new cross-dataset SOTA claim).
+- **Exit criteria:** End-to-end path on at least one non-Beijing fixture CSV:
+  ingest → adapt → `K` posterior samples → downloadable mean-fill (+ optional
+  multi-sample export). Documented assumptions and compute caps.
+- **Walkthrough:** `docs/milestone_7_walkthrough.md` when work starts.
+- **Depends on:** M6.
+
+### M8 — Gap-regime routing
+
+- **Goal:** Detect contiguous gap length and choose a policy — light / point
+  methods for short holes; full TimeFill (or a specialist) for medium / large
+  blocks — matching M3 evidence that linear is strong on easy short MCAR while
+  TimeFill wins on blocks and probabilistic scores.
+- **Tasks:**
+  1. Define small / medium / large thresholds (config-driven; document defaults).
+  2. Implement a router that assigns each gap (or window) a backend policy.
+  3. Baselines for short gaps (e.g. linear / LOCF); TimeFill for medium/large;
+     optional long-gap specialist or block-gap curriculum if time permits.
+  4. Benchmark vs single-policy TimeFill and vs LOCF/linear on the frozen M3
+     protocols (or a documented extension); report wins/losses honestly.
+  5. Optional Streamlit toggle: “auto route” vs “always TimeFill.”
+- **Exit criteria:** Documented routing contract + table or notes showing when
+  routing helps or hurts; runnable script or app path that applies the router.
+- **Walkthrough:** `docs/milestone_8_walkthrough.md` when work starts.
+- **Depends on:** M3 evidence contract; product wiring can use M4/M7 paths.
+
+### M9 — Evidence expansion
+
+- **Goal:** Strengthen credibility or demo friction **without** expanding the
+  v1 Beijing claim by accident. Choose **one primary** track for the milestone
+  DoD; treat the others as optional follow-ons in the same milestone only if
+  capacity allows.
+- **Primary tracks (pick one):**
+  1. **Hosted checkpoint:** downloadable M2 weights + scaler so clone → demo
+     does not require a local full train (still Beijing-scoped unless a
+     generalist from M7 ships).
+  2. **Second domain:** PhysioNet-style or other multivariate series with its
+     own prepare/train/eval notes; claims kept separate from Beijing v1.
+  3. **Stronger baseline:** CSDI / BRITS / Transformer (or similar) as a
+     measuring stick or optional backend — comparison only; no win claimed
+     until measured.
+- **Tasks (per chosen track):** freeze protocol updates in `docs/EVAL.md` /
+  ASSUMPTIONS as needed; scripts + artifacts path; README honesty (scope,
+  non-claims); tests or smoke where applicable.
+- **Exit criteria:** Primary track shipped with docs and a reproduce path;
+  README / failure notes updated so v1 Beijing numbers remain clearly scoped.
+- **Walkthrough:** `docs/milestone_9_walkthrough.md` when work starts.
+- **Suggested order after M6–M8:** hosted checkpoint if demo UX is the
+  bottleneck; second domain or stronger baseline if portfolio evidence is.
 
 ---
 
@@ -222,29 +330,20 @@ notebooks/       # optional exploration only
 | Overclaiming vs CSDI | Position as continuous-time / irregular-time JAX implementation with uncertainty UX, not “first ever imputer” |
 | Metric gaming | Pre-register protocols in Phase 0; report failures |
 | Project collapses into “CSDI in JAX” | Keep SDE+Diffrax primary; ship irregular-time or label it deferred; benchmark vs CSDI in M3 |
+| Universal path overclaims v1 Beijing results | Keep M6–M9 claims scoped; do not silently remap schemas or merge eval tables |
+| Train-on-upload too slow / unstable on CPU | Smoke caps, fine-tune-from-base, clear timeouts; hosted checkpoint (M9) for pretrained demo |
 
 ---
 
-## Stretch Goals (only after M4)
+## Stretch Goals (unscheduled; promote before implementing)
 - True irregular-time latent Neural SDE encoder–decoder
-- Block-gap curriculum and longer horizons
+- Block-gap curriculum and longer horizons (partially overlapping M8; full
+  curriculum stays stretch unless pulled into M8 DoD)
 - Constrained imputation (business / physical bounds) during reverse sampling
-- Simple privacy risk discussion (memorization checks) if synthetic export is emphasized
-
-## Post-v1 roadmap (not v1 DoD)
-
-Ideas only; see README **Product north star** / **Future work**. Not
-milestones unless scheduled later:
-
-- **Train-on-upload:** schema-flexible CSV → train / fine-tune on the user’s
-  file → impute → download (beyond frozen Beijing `F=6` pretrained path)
-- **Gap-regime routing:** small / medium / large gap policies or specialists
-  (plus block-gap curriculum / longer horizons)
-- Stronger baselines or optional imputers (CSDI / BRITS / Transformer) for
-  comparison — no win claimed until measured
-- Hosted M2 checkpoint + scaler for clone → demo without local full train
-- Second-domain evidence (e.g. PhysioNet-style), still separate from v1 Beijing
-  claim scope
+- Simple privacy risk discussion (memorization checks) if synthetic export is
+  emphasized
+- Synthetic trajectory export as a first-class product feature (optional v1.1
+  idea from Phase 3; still secondary to imputation)
 
 ## Relation to Prior Art (CSDI)
 

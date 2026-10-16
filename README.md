@@ -19,8 +19,11 @@ score-SDE (or specialist) imputer.
 **v1 (what this repo proves today):** that stack works end-to-end on one real
 path — UCI Beijing air-quality (`F=6`), pretrained M2 checkpoint, Streamlit
 demo with **exact schema** (no silent remaps), and honest LOCF / linear
-evidence. Train-on-upload, schema-agnostic CSV, and gap-size routing remain
-**post-v1** (see Future work).
+evidence. **Post-v1 M6** adds schema-flexible **ingest / preview** for
+non-Beijing CSVs; that is **not** a universal imputer — Flexible-schema
+**impute** still needs a compatible checkpoint/scaler or **M7**.
+Train-on-upload, gap-size routing, and evidence expansion remain later
+post-v1 (see Future work).
 
 ## Method (short)
 
@@ -55,6 +58,9 @@ a PhysioNet run** (Beijing air-quality path; see `docs/EVAL.md`).
 - **Metrics reproduce** — see **Clone → metrics** (optional full M3 table)
 - **Contracts** — `ASSUMPTIONS.md` (incl. Milestone 5 portfolio rules),
   `docs/EVAL.md`
+- **Flexible ingest (M6)** — non-Beijing CSV → validate / window / schema +
+  missingness **preview**; pretrained impute stays Exact Beijing (or a
+  matching checkpoint). Walkthrough: `docs/milestone_6_walkthrough.md`
 
 Milestone walkthroughs and contracts are linked in **Docs appendix**.
 
@@ -121,6 +127,10 @@ original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
   (`configs/bench_m3.yaml` vs `configs/app_m4.yaml`).
 - **CPU vs GPU:** full M3 / M2 defaults are slow on CPU; GPU optional via a
   matching JAX CUDA build. Demo targets a few minutes on CPU with smoke caps.
+- **Flexible ingest ≠ universal impute:** M6 accepts messy non-Beijing
+  schemas for preview (and clear rejects). The M2 Beijing checkpoint does
+  **not** impute arbitrary CSVs; use Exact names, a matching checkpoint, or
+  M7 train-on-upload.
 - **Point-baseline CRPS / coverage are degenerate `K=1`:** CRPS ≈ absolute
   error; interval width 0 — not calibrated probabilistic scores.
 
@@ -442,41 +452,48 @@ Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
 
 ## Docs appendix
 
-- [`ASSUMPTIONS.md`](ASSUMPTIONS.md) — M1–M5 contracts
+- [`ASSUMPTIONS.md`](ASSUMPTIONS.md) — M1–M6 contracts
 - [`docs/EVAL.md`](docs/EVAL.md) — eval / mask / split protocol
 - [`docs/milestone_1_walkthorugh.md`](docs/milestone_1_walkthorugh.md)
 - [`docs/milestone_2_walkthrough.md`](docs/milestone_2_walkthrough.md)
 - [`docs/milestone_3_walkthrough.md`](docs/milestone_3_walkthrough.md)
 - [`docs/milestone_4_walkthrough.md`](docs/milestone_4_walkthrough.md)
 - [`docs/milestone_5_walkthrough.md`](docs/milestone_5_walkthrough.md)
+- [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md)
 
 ## Future work
 
-Post-v1 stretch only (not claimed as shipped). Roadmap toward the **product
-north star** above — not a new M6+ DoD unless scheduled later:
+Roadmap toward the **product north star** above. Scheduled milestones and
+exit criteria live in [`plan.md`](plan.md) (**Post-v1 milestones (M6–M9)**).
+M6 detail: [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md).
 
-- **Train-on-upload (universal path):** accept a user’s messy CSV (beyond the
-  frozen Beijing `F=6` schema), infer columns / masks, **train or fine-tune
-  on that file**, then impute and download. v1 Streamlit stays pretrained-only
-  + exact column names.
-- **Gap-regime routing (small / medium / large):** detect gap length and choose
-  a policy — e.g. light / point methods for short holes, full TimeFill (or a
-  long-gap specialist) for medium and large blocks; optionally train
-  specialists or a block-gap curriculum rather than one model for all regimes.
-- **Schema-flexible ingest:** column mapping, timestamps, pad/truncate, and
-  clear errors when the series is too short / sparse to train.
-- **Stronger baselines / alternate imputers:** CSDI / BRITS / Transformer (or
-  similar) as measuring sticks or optional backends — comparison only until
-  evidence exists; no win claimed by default.
-- **Hosted checkpoint:** downloadable M2 weights + scaler so clone → demo does
-  not require a local full train (still Beijing-scoped unless a generalist
-  ships).
-- **Second domain:** PhysioNet-style or other multivariate series as additional
-  evidence (motivation only in v1).
-- True irregular-time latent Neural SDE encoder–decoder
-- Constrained imputation (business / physical bounds) during reverse sampling
-- Privacy / memorization checks if synthetic export is emphasized
+**Shipped (post-v1):** **M6 — Schema-flexible ingest** — infer / map columns,
+native masks, pad / window / reject thresholds, Streamlit + CLI schema /
+missingness **preview before impute**. Schema-flexible ingest is **not** a
+universal imputer: Flexible-schema **impute** still needs a **compatible
+checkpoint / scaler** or **M7** train-on-upload. v1 Beijing M3 claim tables
+are unchanged (`docs/EVAL.md`).
 
+**Next scheduled:** **M7 — Train-on-upload / adapt** → **M8 — Gap-regime
+routing** → **M9 — Evidence expansion** (hosted checkpoint, second domain,
+or stronger baseline — one primary track).
+
+- **M6 Schema-flexible ingest (shipped):** column mapping, timestamps,
+  pad/truncate, clear rejects for too short / sparse / invalid schema;
+  Exact Beijing remains the pretrained fallback. See
+  [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md).
+- **M7 Train-on-upload:** train or fine-tune on the user’s CSV, then impute
+  and download. Pretrained impute stays Exact Beijing (or a matching
+  checkpoint) until M7.
+- **M8 Gap-regime routing:** detect gap length → light / point methods for
+  short holes, full TimeFill (or specialist) for medium / large blocks.
+- **M9 Evidence expansion:** hosted M2 checkpoint, second-domain evidence
+  (e.g. PhysioNet-style), and/or stronger baselines (CSDI / BRITS /
+  Transformer) — comparison only until measured; no win claimed by default.
+
+**Unscheduled stretch** (see `plan.md`): true irregular-time latent Neural SDE
+encoder–decoder; constrained imputation (business / physical bounds); privacy /
+memorization checks if synthetic export is emphasized.
 ## References
 
 1. Tashiro, Y., Song, J., Song, Y., & Ermon, S. (2021). CSDI: Conditional

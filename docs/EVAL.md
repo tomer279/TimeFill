@@ -259,6 +259,21 @@ exactly (no silent remaps). **On-the-fly fine-tune is deferred for v1**
 in-app “eval” is a small smoke slice only. Irregular wall-clock as first-class
 SDE dynamics remains deferred (timestamps for resample / display only).
 
+## M6 flexible ingest (does not expand this contract)
+
+Post-v1 **schema-flexible ingest** (`ASSUMPTIONS.md` Milestone 6;
+`docs/milestone_6_walkthrough.md`) accepts non-Beijing multivariate CSVs for
+**validate → window → schema / missingness preview** (Streamlit and/or
+`scripts/preview_ingest_m6.py`). That path:
+
+- Does **not** change the frozen Beijing `F = 6` feature list, splits,
+  missingness protocols, or metrics above.
+- Must **not** merge flexible-ingest demos into M3 Beijing claim tables
+  (`artifacts/m3/`, `docs/m3_failure_notes.md`, or README Evidence).
+- Does **not** claim that arbitrary CSVs can be imputed with the M2 Beijing
+  checkpoint. Flexible-schema **impute** needs a compatible checkpoint /
+  scaler or **M7** train-on-upload.
+
 ## Out of scope here
 
 - Implementing the benchmark runner and baseline code (later M3 work packages;

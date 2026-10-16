@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import plotly.graph_objects as go
+import plotly.graph_objects as go  # type: ignore  # pylint: disable=import-error
 
 from src.data.schema import MASK_OBSERVED
 

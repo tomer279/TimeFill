@@ -37,6 +37,7 @@ import numpy as np
 from app.m4_config import AppM4Config, AppM4SampleKnobs, load_app_m4_config
 from app.schema_validate import default_app_schema, validate_upload_csv
 from app.window_adapter import AdaptedWindows, adapt_validated_frame
+from src.data.config import SdeConfig
 from src.data.normalize import FeatureScaler
 from src.data.real.masks import MaskComposer
 from src.data.real_config import load_real_m2_config
@@ -254,15 +255,22 @@ class _ImputeSolvePlan:
         ImputeSolverSettings
             Validated solver settings.
         """
-        settings_kwargs: dict[str, float | int] = {
-            "solver_steps": self.knobs.solver_steps,
-            "t_eps": t_eps,
-        }
-        if self.quantile_low is not None:
-            settings_kwargs["quantile_low"] = float(self.quantile_low)
-        if self.quantile_high is not None:
-            settings_kwargs["quantile_high"] = float(self.quantile_high)
-        return ImputeSolverSettings(**settings_kwargs)
+        low = (
+            float(self.quantile_low)
+            if self.quantile_low is not None
+            else _DEFAULT_QUANTILE_LOW
+        )
+        high = (
+            float(self.quantile_high)
+            if self.quantile_high is not None
+            else _DEFAULT_QUANTILE_HIGH
+        )
+        return ImputeSolverSettings(
+            solver_steps=int(self.knobs.solver_steps),
+            t_eps=float(t_eps),
+            quantile_low=low,
+            quantile_high=high,
+        )
 
     def describe(self) -> str:
         """Return a short knob summary.
@@ -518,7 +526,7 @@ class _LoadedBundle:
     model: ConditionalScoreNet
     scaler: FeatureScaler
     t_eps: float
-    sde_cfg: object
+    sde_cfg: SdeConfig
 
     def n_features(self) -> int:
         """Return ``F`` from the loaded scaler.
@@ -561,7 +569,7 @@ class SessionImputer:
         Train scaler from disk.
     t_eps : float
         Terminal diffusion time from ``real_m2.yaml``.
-    sde_cfg :
+    sde_cfg : SdeConfig
         ``SdeConfig`` matching the M2 checkpoint.
     """
 
@@ -577,7 +585,7 @@ class SessionImputer:
         self.model = bundle.model
         self.scaler = bundle.scaler
         self.t_eps = bundle.t_eps
-        self.sde_cfg = bundle.sde_cfg
+        self.sde_cfg: SdeConfig = bundle.sde_cfg
 
     @classmethod
     def from_app_config(cls, path: Path | str) -> SessionImputer:

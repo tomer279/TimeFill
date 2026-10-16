@@ -517,3 +517,157 @@ Allowed framing examples: “CSDI-style conditional imputation objective”;
 - New training runs or changing M2/M3 report defaults as an M5 exit criterion.
 - Regressing the M4 Streamlit app or the M3 benchmark path.
 - M5 closure is docs-only (citations, hygiene, exit checklist); no new `src/`.
+
+---
+
+# Milestone 6 Assumptions (schema-flexible ingest)
+
+This section extends M1–M5 for **post-v1 schema-flexible ingest**. M1–M5
+contracts above remain in force. M6 does **not** redefine the tensor / mask
+alphabet, the missing-value sentinel, Beijing `F = 6` claim tables, M2/M3
+training or report protocols, or the M4 exact-schema Streamlit happy path.
+
+## Carry-forward (unchanged)
+
+- Values and masks `(B, T, F)`; default **`T = seq_len = 64`**; `1` = observed,
+  `0` = missing; missing `x` cells are sentinel **`0.0`**. Never infer
+  missingness from nonzero values in `x`.
+- **v1 pretrained / evidence path:** Beijing `F = 6` exact names
+  (`PM2.5`, `PM10`, `SO2`, `NO2`, `CO`, `O3`); M2 checkpoint + scaler; M3 vs
+  LOCF / linear only (`docs/EVAL.md`).
+- **Regular grid after optional binning:** resample / last-value-in-bin → fixed
+  `T` (same spirit as M2–M4). **Irregular wall-clock as first-class SDE
+  dynamics remains deferred.** Timestamps may be used for bin / display only.
+- **M4 pad / multi-window spirit:** non-overlapping windows of length `T`;
+  right-pad short series and trailing remainders with sentinel `0.0` and
+  `m = 0`; optional `max_windows` cap (UI / preview latency).
+
+## Two ingest modes
+
+| Mode | Schema | Allowed actions in M6 |
+|---|---|---|
+| **Exact Beijing (fallback)** | Required feature names match EVAL order exactly | Ingest + window + **pretrained impute** (current M4 path) |
+| **Flexible schema** | User / inferred `features[]` with `F ≥ 1` (see max-`F` cap) | **Ingest + schema / missingness preview only** until M7 or a **matching** checkpoint / scaler |
+
+- Exact mode is the default pretrained demo; flexible mode must not silently
+  degrade into Exact by renaming columns.
+- Mode selection (later WPs): auto-detect Exact when headers match
+  `default_app_schema()`; otherwise Flexible (with optional user map override).
+
+## Column roles
+
+- **`features[]`:** continuous numeric columns used as the feature axis
+  (order is user-confirmed or map-YAML / CLI map; no silent Beijing rename).
+- **`timestamp` (optional):** wall-clock for optional hourly last-value-in-bin
+  and display. If absent, row order is the grid index `0 … L-1`.
+- **`entity` / `id` (optional):** grouping for multi-series when present;
+  single series when absent. Display / grouping only in M6 (no new entity
+  model).
+- **Hard ban:** silent remap of unknown headers to `PM2.5`…`O3`.
+
+## Native missingness
+
+- Empty / NaN / documented NA tokens (`""`, `na`, `nan`, `null`, `none`,
+  case-insensitive) → **`m_native = 0`**, value sentinel **`0.0`**.
+- Same mask alphabet as M1–M5; missingness is never inferred from nonzero `x`.
+
+## Pad / truncate / window defaults
+
+- After optional regular-grid binning (or row-order if no timestamps), cut
+  **non-overlapping** windows of length **`T = seq_len`** (default **64**).
+- Short series / trailing remainder: **right-pad** with sentinel `0.0` and
+  `m = 0`. Padded cells are never GT imputation targets.
+- Optional **`max_windows`** cap (preview / UI latency); document the effective
+  count when practical.
+- **Locked default:** multi-window + pad remainder (M4 spirit). A
+  “truncate to first `T` only” toggle is **not** required for M6 exit and is
+  not the default.
+
+## Reject thresholds (locked defaults)
+
+Reject with **user-facing errors** (not stack traces only). Never invent
+Beijing columns to “fix” a reject. Keys below match
+`configs/ingest_m6.yaml` when that skeleton is present.
+
+| Rule | Locked default | Definition |
+|---|---|---|
+| **`min_rows`** | **`max(1, seq_len // 4)`** → **16** when `seq_len = 64` | After optional binning, reject if usable grid length `L < min_rows` |
+| **`min_observed_rate_global`** | **0.10** | Reject if `mean(m_native) < 0.10` over all cells |
+| **`min_observed_rate_per_feature`** | **0.05** | Reject if **any** feature has `mean(m_native[:, f]) < 0.05` |
+| **`max_features`** | **32** | Soft cap on `F`; reject clearly if `F > 32` |
+
+- **Schema-invalid** (zero features after map, duplicate maps, non-numeric
+  feature cells after parse, empty file) → reject.
+- Thresholds apply to the **native** frame / grid **before** artificial demo
+  masks (same spirit as M4: reject on source quality, not on demo corruption).
+
+## Impute gate
+
+- **Exact Beijing:** pretrained impute allowed when features **exactly** match
+  the loaded M2 scaler / checkpoint names and count (current M4 behavior).
+- **Flexible schema:** may show schema + missingness + window preview, then
+  **block impute** unless mapped `features[]` **exactly** match the loaded
+  scaler / checkpoint feature names and `F`.
+- Block message must point to **M7 train-on-upload / adapt** or “load a
+  compatible checkpoint / scaler,” not imply silent success with Beijing
+  weights on a mismatched schema.
+
+## Fixture location plan
+
+- Small non-Beijing CSV (git-friendly): **`tests/fixtures/toy_non_beijing.csv`**
+  (shipped in a later WP; path locked here).
+- Must **not** use the frozen Beijing pollutant name set as its schema.
+- Optional preview sample path may also be referenced from
+  `configs/ingest_m6.yaml` (`data.fixture_csv`).
+
+## M4 extension points (inventory)
+
+| Module | Current exact-schema role |
+|---|---|
+| `app/schema_validate.py` | `AppSchemaSpec`, `validate_upload_csv` / `validate_upload_rows`, `ValidatedFrame`, `summarize_missingness` |
+| `app/window_adapter.py` | `WindowAdaptRequest`, `adapt_validated_frame` (pad / multi-window / `max_windows`) |
+| `app/streamlit_app.py` | `_load_payload`, `_render_upload_guidance`, `_validate_uploaded_bytes` (upload → exact validate → adapt) |
+| `configs/app_m4.yaml` | Beijing demo defaults; **keep** as Exact-mode config |
+
+## Banned behaviors
+
+- Silent remap of unknown columns to Beijing names (`PM2.5`…`O3`).
+- Claiming arbitrary CSVs can be imputed with the M2 Beijing checkpoint.
+- Merging flexible-ingest demos into M3 Beijing claim tables or rewriting
+  `docs/EVAL.md` protocols as if flexible ingest expands v1 metrics.
+- Advertising a universal imputer from M6 alone.
+- Rewriting M1–M5 tensor / mask / sentinel contracts.
+
+## Claim discipline (flexible ingest ≠ Beijing evidence)
+
+- Flexible ingest validates windows and previews missingness; it does **not**
+  expand the v1 Beijing M3 claim table or EVAL report protocols (see
+  `docs/EVAL.md` § **M6 flexible ingest**).
+- Portfolio / README numbers remain Beijing-only until a later milestone
+  explicitly unlocks a new domain with measured evidence.
+- M6 ships ingest flexibility, **not** a universal imputer. Impute on a
+  Flexible schema requires a matching checkpoint / scaler or **M7**.
+
+## Artifacts
+
+- Optional config skeleton: **`configs/ingest_m6.yaml`** (thresholds, `max_F`,
+  fixture path). Do **not** overwrite M2/M3 claim artifacts or
+  `configs/app_m4.yaml` Beijing defaults.
+- Do not wire Streamlit to `ingest_m6.yaml` in WP0.
+
+## Irregular time (status)
+
+- **Deferred:** irregular wall-clock as first-class SDE dynamics is **not**
+  promoted in M6. Timestamps for bin / display only; dynamics remain regular
+  grid + masks.
+
+## Out of scope for M6
+
+- **M7** train-on-upload / adapt
+- **M8** gap-regime routing
+- **M9** evidence expansion (hosted checkpoint, second domain, stronger
+  baseline)
+- Stretch irregular-time Neural SDE
+- Claiming a universal imputer
+- Rewriting M1–M5 tensor contracts or silently changing Beijing `EVAL.md`
+  claim protocols

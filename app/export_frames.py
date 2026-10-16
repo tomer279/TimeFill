@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
+import pandas as pd  # type: ignore  # pylint: disable=import-error
 
 from src.data.schema import BATCH_AXIS, FEATURE_AXIS, TIME_AXIS
 
@@ -190,9 +190,12 @@ def samples_long_dataframe(request: SampleExportRequest) -> pd.DataFrame:
         columns=list(request.feature_names),
     )
     wide.columns.name = _FEATURE_COL
-    long = wide.stack()
-    long.name = _VALUE_COL
-    frame = long.reset_index()
+    stacked = wide.stack()
+    if not isinstance(stacked, pd.Series):
+        raise TypeError(
+            "expected stack() to return a Series for single-level columns"
+        )
+    frame = stacked.rename(_VALUE_COL).reset_index()
     return frame[
         [_SAMPLE_COL, _WINDOW_COL, _T_COL, _FEATURE_COL, _VALUE_COL]
     ]

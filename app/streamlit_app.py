@@ -1,26 +1,20 @@
-"""Milestone 4 Streamlit product UI (Phase 5).
+"""Milestone 4 / 6 Streamlit product UI (Phase 5 + M6 preview).
 
 Sidebar demo-mask / ``K`` / solver / quantile knobs; main pane upload or
-bundled sample → missingness → reverse-SDE impute (WP2) → Plotly charts →
-mean-fill download. Optional demo-eval smoke (not the M3 report).
+bundled sample → schema / missingness preview → reverse-SDE impute when
+the pretrained gate allows → Plotly charts → mean-fill download.
 
-Fine-tune controls are omitted (ASSUMPTIONS M4: pretrained-only). Irregular
-wall-clock SDE dynamics remain deferred.
+Exact Beijing (bundled sample + exact-schema upload) remains the
+pretrained impute path. Flexible uploads preview schema / missingness /
+windows (or reject) and **block impute** unless mapped features exactly
+match the loaded checkpoint/scaler (ASSUMPTIONS M6). Fine-tune controls
+are omitted (M7). Irregular wall-clock SDE dynamics remain deferred.
+
+Session types and CSV → payload assembly live in ``app.ui_session``.
 
 Launch
 ------
 streamlit run app/streamlit_app.py
-
-Classes
--------
-UiDemoMaskControls
-    Demo MCAR / block sidebar knobs.
-UiSolverControls
-    ``K`` / steps / quantile sidebar knobs.
-UiSidebarState
-    Nested sidebar state collected once per rerun.
-UiSessionPayload
-    Validated frame, adapted windows, and optional impute result.
 
 Functions
 ---------
@@ -31,12 +25,10 @@ main
 from __future__ import annotations
 
 import sys
-import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
-import pandas as pd  # pylint: disable = import-error
-import streamlit as st  # pylint: disable = import-error
+import pandas as pd  # type: ignore # pylint: disable = import-error
+import streamlit as st  # type: ignore # pylint: disable = import-error
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -58,20 +50,18 @@ from app.plot_impute import (
     figure_imputed_mean_bands,
     figure_original_with_gaps,
 )
-from app.schema_validate import (
-    AppSchemaSpec,
-    ValidatedFrame,
-    default_app_schema,
-    summarize_missingness,
-    validate_upload_csv,
+from app.preview_ingest import MODE_EXACT_BEIJING
+from app.session_impute import SessionImputeResult, SessionImputer
+from app.ui_session import (
+    ImputeSectionContext,
+    UiDemoMaskControls,
+    UiSessionPayload,
+    UiSidebarState,
+    UiSolverControls,
+    build_bundled_payload,
+    build_upload_payload_from_bytes,
 )
-from app.session_impute import (
-    DemoMaskRequest,
-    SessionImputeRequest,
-    SessionImputeResult,
-    SessionImputer,
-)
-from app.window_adapter import AdaptedWindows, adapt_validated_frame
+from app.window_adapter import AdaptedWindows
 # pylint: enable=wrong-import-position
 
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "app_m4.yaml"
@@ -96,242 +86,8 @@ _UCI_BEIJING_URL = (
     "beijing+multi+site+air+quality+data"
 )
 _PRSA_ZIP_NAME = "PRSA2017_Data_20130301-20170228.zip"
-
-
-@dataclass(frozen=True)
-class UiDemoMaskControls:
-    """Demo corruption sidebar knobs.
-
-    Public methods
-    --------------
-    as_request
-        Build a ``DemoMaskRequest`` with a seed.
-    is_active
-        True when mode is not ``none``.
-
-    Instance variables
-    ------------------
-    mode : str
-        ``none``, ``random``, or ``block``.
-    rate : float
-        MCAR rate when mode is ``random``.
-    block_len : int
-        Block length when mode is ``block``.
-    """
-
-    mode: str
-    rate: float
-    block_len: int
-
-    def as_request(self, seed: int) -> DemoMaskRequest:
-        """Build the demo corruption request.
-
-        Parameters
-        ----------
-        seed : int
-            ``seeds.mask`` from the app config.
-
-        Returns
-        -------
-        DemoMaskRequest
-            Sidebar-composed mask knobs.
-        """
-        return DemoMaskRequest(
-            mode=self.mode,
-            rate=self.rate,
-            block_len=self.block_len,
-            seed=seed,
-        )
-
-    def is_active(self) -> bool:
-        """Return whether artificial demo masking is enabled.
-
-        Returns
-        -------
-        bool
-            ``True`` when mode is not ``none``.
-        """
-        return self.mode != _MASK_NONE
-
-
-@dataclass(frozen=True)
-class UiSolverControls:
-    """Sampler / predictive-band sidebar knobs.
-
-    Public methods
-    --------------
-    describe
-        Short ``K`` / steps summary.
-    apply_to_request
-        Build a ``SessionImputeRequest`` for adapted windows.
-
-    Instance variables
-    ------------------
-    k_samples : int
-        Posterior sample count ``K``.
-    solver_steps : int
-        Reverse-SDE solver steps.
-    quantile_low : float
-        Lower predictive quantile.
-    quantile_high : float
-        Upper predictive quantile.
-    """
-
-    k_samples: int
-    solver_steps: int
-    quantile_low: float
-    quantile_high: float
-
-    def describe(self) -> str:
-        """Return a short knob summary.
-
-        Returns
-        -------
-        str
-            ``K=... steps=...``.
-        """
-        return f"K={self.k_samples} steps={self.solver_steps}"
-
-    def apply_to_request(
-            self,
-            windows: AdaptedWindows,
-            demo_mask: DemoMaskRequest,
-    ) -> SessionImputeRequest:
-        """Build the WP2 impute request.
-
-        Parameters
-        ----------
-        windows : AdaptedWindows
-            Adapted upload / sample windows.
-        demo_mask : DemoMaskRequest
-            Composed demo corruption knobs.
-
-        Returns
-        -------
-        SessionImputeRequest
-            Ready for ``SessionImputer.impute``.
-        """
-        return SessionImputeRequest(
-            windows=windows,
-            demo_mask=demo_mask,
-            k_samples=self.k_samples,
-            solver_steps=self.solver_steps,
-            quantile_low=self.quantile_low,
-            quantile_high=self.quantile_high,
-        )
-
-
-@dataclass(frozen=True)
-class UiSidebarState:
-    """Nested sidebar controls for one Streamlit rerun.
-
-    Public methods
-    --------------
-    impute_request
-        Build a ``SessionImputeRequest`` for adapted windows.
-    wants_sample_overlay
-        Whether to overlay posterior draws on the impute chart.
-
-    Instance variables
-    ------------------
-    demo_mask : UiDemoMaskControls
-        Demo corruption knobs.
-    solver : UiSolverControls
-        Sampler / quantile knobs.
-    overlay_samples : bool
-        Whether to overlay posterior draws on the impute chart.
-    """
-
-    demo_mask: UiDemoMaskControls
-    solver: UiSolverControls
-    overlay_samples: bool
-
-    def impute_request(
-            self,
-            windows: AdaptedWindows,
-            seed: int,
-    ) -> SessionImputeRequest:
-        """Build the WP2 impute request.
-
-        Parameters
-        ----------
-        windows : AdaptedWindows
-            Adapted upload / sample windows.
-        seed : int
-            Mask seed from config.
-
-        Returns
-        -------
-        SessionImputeRequest
-            Ready for ``SessionImputer.impute``.
-        """
-        return self.solver.apply_to_request(
-            windows,
-            self.demo_mask.as_request(seed),
-        )
-
-    def wants_sample_overlay(self) -> bool:
-        """Return whether posterior sample overlay is enabled.
-
-        Returns
-        -------
-        bool
-            ``overlay_samples``.
-        """
-        return self.overlay_samples
-
-
-@dataclass(frozen=True)
-class UiSessionPayload:
-    """Loaded CSV + windows for the current session selection.
-
-    Public methods
-    --------------
-    n_windows
-        Adapted batch size ``B``.
-    missingness_table
-        Per-feature percent-missing dataframe for the UI.
-
-    Instance variables
-    ------------------
-    frame : ValidatedFrame
-        Schema-validated table.
-    windows : AdaptedWindows
-        Pad / cap windows ready to impute.
-    source_label : str
-        Sample-dataset label or upload filename.
-    """
-
-    frame: ValidatedFrame
-    windows: AdaptedWindows
-    source_label: str
-
-    def n_windows(self) -> int:
-        """Return adapted window count.
-
-        Returns
-        -------
-        int
-            ``B``.
-        """
-        return self.windows.n_windows()
-
-    def missingness_table(self) -> pd.DataFrame:
-        """Return a small missingness summary table.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Feature name and percent missing.
-        """
-        summary = summarize_missingness(self.frame)
-        percents = summary.per_feature_percent()
-        return pd.DataFrame(
-            {
-                "Pollutant": list(percents.keys()),
-                "% missing": list(percents.values()),
-            }
-        )
+_SESSION_RESULT_KEY = "m4_impute_result"
+_SESSION_FEATURES_KEY = "m4_feature_names"
 
 
 @st.cache_resource
@@ -468,7 +224,7 @@ def _render_sidebar(config: AppM4Config) -> UiSidebarState:
 
 
 def _load_payload(config: AppM4Config) -> UiSessionPayload | None:
-    """Resolve bundled sample or upload into validated windows.
+    """Resolve bundled sample or upload into validated preview state.
 
     Parameters
     ----------
@@ -486,44 +242,75 @@ def _load_payload(config: AppM4Config) -> UiSessionPayload | None:
         options=[_SOURCE_BUNDLED, _SOURCE_UPLOAD],
         horizontal=True,
     )
-    schema = default_app_schema()
     if source == _SOURCE_BUNDLED:
-        st.caption(
-            "Sample matches the Beijing air-quality schema this demo was "
-            "trained on (known-good path)."
-        )
-        if not config.paths.sample_csv.is_file():
-            st.error(
-                "Sample file is missing. Expected "
-                f"{config.paths.sample_csv}."
-            )
-            return None
-        frame = validate_upload_csv(config.paths.sample_csv, schema)
-        label = _SOURCE_BUNDLED
-    else:
-        _render_upload_guidance(config)
-        uploaded = st.file_uploader(
-            "Upload a CSV (exact pollutant column names required)",
-            type="csv",
-            help="Column names must match exactly; aliases are not remapped.",
-        )
-        if uploaded is None:
-            st.info(
-                "Upload a CSV that matches the checklist above, or switch to "
-                "the sample dataset for a known-good demo."
-            )
-            return None
-        frame = _validate_uploaded_bytes(uploaded.getvalue(), schema)
-        label = uploaded.name
-    windows = adapt_validated_frame(
-        frame,
-        config.schema.window_request(config.smoke.max_windows),
+        return _load_bundled_payload(config)
+    return _load_upload_payload(config)
+
+
+def _load_bundled_payload(config: AppM4Config) -> UiSessionPayload | None:
+    """Load the bundled Beijing sample (Exact pretrained path).
+
+    Parameters
+    ----------
+    config : AppM4Config
+        Sample path and window knobs.
+
+    Returns
+    -------
+    UiSessionPayload or None
+        Payload, or ``None`` if the sample file is missing.
+    """
+    st.caption(
+        "Sample matches the Beijing air-quality schema this demo was "
+        "trained on (known-good pretrained path)."
     )
-    return UiSessionPayload(frame=frame, windows=windows, source_label=label)
+    payload = build_bundled_payload(config)
+    if payload is None:
+        st.error(
+            "Sample file is missing. Expected "
+            f"{config.paths.sample_csv}."
+        )
+    return payload
+
+
+def _load_upload_payload(config: AppM4Config) -> UiSessionPayload | None:
+    """Load an uploaded CSV with Exact / Flexible auto-detect.
+
+    Parameters
+    ----------
+    config : AppM4Config
+        Schema names and window policy.
+
+    Returns
+    -------
+    UiSessionPayload or None
+        Payload, or ``None`` when no file is uploaded yet.
+    """
+    _render_upload_guidance(config)
+    uploaded = st.file_uploader(
+        "Upload a CSV (Exact Beijing names → impute; else Flexible preview)",
+        type="csv",
+        help=(
+            "Exact pollutant names enable pretrained impute. Other schemas "
+            "preview only unless features match the loaded checkpoint. "
+            "Columns are never silently remapped to PM2.5…O3."
+        ),
+    )
+    if uploaded is None:
+        st.info(
+            "Upload a CSV, or switch to the sample dataset for a "
+            "known-good Beijing demo."
+        )
+        return None
+    return build_upload_payload_from_bytes(
+        uploaded.getvalue(),
+        uploaded.name,
+        config,
+    )
 
 
 def _render_upload_guidance(config: AppM4Config) -> None:
-    """Show pretrained-domain warning and CSV checklist for uploads.
+    """Show Exact vs Flexible upload guidance.
 
     Parameters
     ----------
@@ -533,67 +320,77 @@ def _render_upload_guidance(config: AppM4Config) -> None:
     feature_list = ", ".join(config.schema.feature_names)
     seq_len = config.schema.seq_len
     st.warning(
-        "This demo uses a model trained on **UCI Beijing Multi-Site "
-        "Air-Quality (PRSA)** — see **About this model** above. Uploads "
-        "work best from that same source and do **not** retrain the model. "
-        "Your file must use the **exact** pollutant column names below. "
-        "Other cities or unrelated sensors may parse after renaming but "
-        "are unsupported and can fill poorly. Prefer the sample dataset "
-        "if you only want to try the product."
+        "This demo’s **pretrained** imputer is trained on **UCI Beijing "
+        "Multi-Site Air-Quality (PRSA)**. Exact-schema uploads (pollutant "
+        "names below) can be imputed. Other CSVs use **Flexible ingest**: "
+        "schema / missingness preview only unless features **exactly** "
+        "match the loaded checkpoint — then you still need matching "
+        "weights. Columns are **never** silently renamed to "
+        f"`{feature_list}`. M6 is not a universal imputer (see M7)."
     )
-    st.markdown(
-        f"**Best-match data source**\n\n"
-        f"- Download **{_PRSA_ZIP_NAME}** from "
-        f"[UCI Beijing Multi-Site Air-Quality]"
-        f"({_UCI_BEIJING_URL}) "
-        f"(same data used for M2 training).\n"
-        f"- Use a per-site `PRSA_Data_*.csv` slice; keep pollutant columns "
-        f"`{feature_list}`.\n"
-        f"- Raw PRSA has `year, month, day, hour` — build a single "
-        f"`timestamp` if needed; map `station` → optional `entity` / "
-        f"`site`; drop meteo columns (TEMP, PRES, …).\n\n"
-        f"**CSV shape for this app**\n\n"
-        f"- **Required columns (exact spelling):** `{feature_list}`\n"
-        f"- **Recommended:** `timestamp` (hourly-style wall clock)\n"
-        f"- **Optional:** `entity` or `site` (display / grouping only)\n"
-        f"- **Missing values:** empty cells or NaN "
-        f"(do not rely on zeros to mean missing)\n"
-        f"- **Shape:** contiguous rows; the app cuts segments of length "
-        f"**{seq_len}** (short tails are padded)\n"
-        f"- **Other air-quality tables:** not recommended unless they "
-        f"already match this schema and units; column aliases are not "
-        f"remapped"
-    )
+    with st.expander(
+            "Exact Beijing CSV checklist (pretrained path)",
+            expanded=False,
+    ):
+        st.markdown(
+            f"**Best-match data source**\n\n"
+            f"- Download **{_PRSA_ZIP_NAME}** from "
+            f"[UCI Beijing Multi-Site Air-Quality]"
+            f"({_UCI_BEIJING_URL}) "
+            f"(same data used for M2 training).\n"
+            f"- Use a per-site `PRSA_Data_*.csv` slice; keep pollutant columns "
+            f"`{feature_list}`.\n"
+            f"- Raw PRSA has `year, month, day, hour` — build a single "
+            f"`timestamp` if needed; map `station` → optional `entity` / "
+            f"`site`; drop meteo columns (TEMP, PRES, …).\n\n"
+            f"**CSV shape for Exact impute**\n\n"
+            f"- **Required columns (exact spelling):** `{feature_list}`\n"
+            f"- **Recommended:** `timestamp` (hourly-style wall clock)\n"
+            f"- **Optional:** `entity` or `site` (display / grouping only)\n"
+            f"- **Missing values:** empty cells or NaN "
+            f"(do not rely on zeros to mean missing)\n"
+            f"- **Shape:** contiguous rows; the app cuts segments of length "
+            f"**{seq_len}** (short tails are padded)\n"
+            f"- **Flexible uploads:** preview schema / missingness; impute "
+            f"stays gated unless features match the checkpoint (or use M7)"
+        )
 
 
-def _validate_uploaded_bytes(
-        payload: bytes,
-        schema: AppSchemaSpec,
-) -> ValidatedFrame:
-    """Write upload bytes to a temp file and validate.
+def _render_preview_panel(payload: UiSessionPayload) -> None:
+    """Show schema / missingness / window preview before impute.
 
     Parameters
     ----------
-    payload : bytes
-        Raw CSV bytes from Streamlit.
-    schema : AppSchemaSpec
-        Column contract for validation.
-
-    Returns
-    -------
-    ValidatedFrame
-        Parsed frame.
+    payload : UiSessionPayload
+        Current session payload.
     """
-    with tempfile.NamedTemporaryFile(
-            suffix=".csv",
-            delete=False,
-    ) as handle:
-        handle.write(payload)
-        temp_path = Path(handle.name)
-    try:
-        return validate_upload_csv(temp_path, schema)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    preview = payload.preview
+    mode_label = (
+        "Exact Beijing (pretrained path)"
+        if payload.ingest_mode == MODE_EXACT_BEIJING
+        else "Flexible schema (preview; impute gated)"
+    )
+    window_text = (
+        str(preview.adapt.n_windows)
+        if preview.adapt.n_windows is not None
+        else "—"
+    )
+    st.subheader("Ingest preview (before fill)")
+    st.write(
+        f"**{payload.source_label}** · mode: **{mode_label}** · "
+        f"F={preview.feature_count()} · L={preview.n_rows} · "
+        f"windows B={window_text}"
+    )
+    st.caption(
+        "Mapped features: " + ", ".join(preview.feature_names)
+    )
+    if preview.adapt.adapt_message:
+        if preview.adapt.n_windows is None:
+            st.error(preview.adapt.adapt_message)
+        else:
+            st.info(preview.adapt.adapt_message)
+    st.caption("Native missingness in your file (before simulated gaps):")
+    st.dataframe(payload.missingness_table(), width="stretch")
 
 
 def _render_charts(
@@ -622,7 +419,7 @@ def _render_charts(
         help="Data is split into fixed-length segments for the model.",
     )
     feature_name = st.selectbox(
-        "Pollutant",
+        "Feature",
         options=list(feature_names),
     )
     feat_idx = feature_names.index(feature_name)
@@ -681,7 +478,7 @@ def _render_downloads(
         data=dataframe_to_csv_bytes(long_frame),
         file_name="timefill_samples_long.csv",
         mime="text/csv",
-        help="One row per draw × time × pollutant for uncertainty analysis.",
+        help="One row per draw × time × feature for uncertainty analysis.",
     )
 
 
@@ -746,22 +543,68 @@ def _render_about_this_model(config: AppM4Config) -> None:
             f"`{_PRSA_ZIP_NAME}`). "
             f"It fills the six pollutants **{feature_list}** on fixed "
             f"**{seq_len}-step** windows after hourly resampling.\n\n"
-            f"**Uploading a CSV does not retrain the model** — it only runs "
-            f"gap-filling (inference) on your file. PRSA Beijing uploads are "
-            f"the best match; they are not automatically a held-out benchmark "
-            f"(the model may have seen similar sites/times during training). "
-            f"This demo does not fine-tune on your upload."
+            f"**Uploading a CSV does not retrain the model** — Exact Beijing "
+            f"schema runs gap-filling (inference). Flexible schemas preview "
+            f"missingness only unless features match this checkpoint; "
+            f"otherwise use Milestone 7 train-on-upload / adapt or a "
+            f"compatible checkpoint. This demo does not fine-tune on your "
+            f"upload."
         )
 
 
+def _render_impute_section(context: ImputeSectionContext) -> None:
+    """Render gated impute controls and prior results.
+
+    Parameters
+    ----------
+    context : ImputeSectionContext
+        Payload, sidebar, imputer, and config.
+    """
+    payload = context.payload
+    if not payload.can_impute():
+        st.session_state.pop(_SESSION_RESULT_KEY, None)
+        st.session_state.pop(_SESSION_FEATURES_KEY, None)
+        st.warning(payload.impute_gate.reason)
+        return
+    windows = payload.windows
+    if windows is None:
+        st.warning(payload.impute_gate.reason)
+        return
+    if st.button("Fill missing values", type="primary"):
+        with st.spinner("Filling gaps… this can take a few minutes on CPU."):
+            result = context.imputer.impute(
+                context.sidebar.impute_request(
+                    windows,
+                    context.seed_mask(),
+                )
+            )
+        st.session_state[_SESSION_RESULT_KEY] = result
+        st.session_state[_SESSION_FEATURES_KEY] = windows.feature_names
+    result = st.session_state.get(_SESSION_RESULT_KEY)
+    feature_names = st.session_state.get(_SESSION_FEATURES_KEY)
+    if result is not None and feature_names is not None:
+        st.success(
+            f"Filled {result.n_windows()} segment(s) "
+            f"({result.meta.describe()}); "
+            f"kept {result.observed_cell_count()} observed values."
+        )
+        _render_charts(
+            result,
+            tuple(feature_names),
+            context.overlay_enabled(),
+        )
+        _render_downloads(result, tuple(feature_names))
+
+
 def main() -> None:
-    """Run the TimeFill M4 Streamlit app."""
+    """Run the TimeFill Streamlit app (M4 Exact + M6 Flexible preview)."""
     st.set_page_config(page_title="TimeFill", layout="wide")
     st.title("TimeFill — fill gaps in air-quality time series")
     st.caption(
-        "Upload messy sensor data (or try the sample), get filled values with "
-        "uncertainty bands, and download a completed CSV. Values are shown "
-        "and exported in original measurement units."
+        "Upload sensor data (or try the Beijing sample), preview schema / "
+        "missingness, then fill gaps when the pretrained checkpoint "
+        "matches. Flexible CSVs preview first; they are not a universal "
+        "imputer."
     )
     config_path = str(_DEFAULT_CONFIG)
     try:
@@ -783,39 +626,17 @@ def main() -> None:
     if payload is None:
         st.stop()
         return
-    st.write(
-        f"**{payload.source_label}** · "
-        f"{payload.n_windows()} segment(s) · "
-        f"{config.schema.seq_len} steps each · "
-        f"{config.schema.n_features} pollutants"
+    _render_preview_panel(payload)
+    _render_impute_section(
+        ImputeSectionContext(
+            payload=payload,
+            sidebar=sidebar,
+            imputer=imputer,
+            config=config,
+        )
     )
-    st.caption("Missingness in your file (before simulated gaps):")
-    st.dataframe(payload.missingness_table(), width="stretch")
-    if st.button("Fill missing values", type="primary"):
-        with st.spinner("Filling gaps… this can take a few minutes on CPU."):
-            result = imputer.impute(
-                sidebar.impute_request(
-                    payload.windows,
-                    config.sample.seed_mask,
-                )
-            )
-        st.session_state["m4_impute_result"] = result
-        st.session_state["m4_feature_names"] = payload.windows.feature_names
-    result = st.session_state.get("m4_impute_result")
-    feature_names = st.session_state.get("m4_feature_names")
-    if result is not None and feature_names is not None:
-        st.success(
-            f"Filled {result.n_windows()} segment(s) "
-            f"({result.meta.describe()}); "
-            f"kept {result.observed_cell_count()} observed values."
-        )
-        _render_charts(
-            result,
-            tuple(feature_names),
-            sidebar.wants_sample_overlay(),
-        )
-        _render_downloads(result, tuple(feature_names))
-    _render_demo_eval(imputer, config, payload.windows)
+    if payload.can_impute() and payload.windows is not None:
+        _render_demo_eval(imputer, config, payload.windows)
 
 
 if __name__ == "__main__":

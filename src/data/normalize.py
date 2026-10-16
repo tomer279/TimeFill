@@ -138,8 +138,8 @@ class FeatureScaler:
         RuntimeError
             If the scaler has not been fitted.
         """
-        self._require_fitted()
-        return int(self.mean.shape[0])
+        mean, _std = self._require_fitted()
+        return int(mean.shape[0])
 
     def fit(
             self,
@@ -183,9 +183,9 @@ class FeatureScaler:
         jax.Array
             Normalized windows; missing cells equal ``0.0``.
         """
-        self._require_fitted()
+        mean, std = self._require_fitted()
         arr, observed = _as_masked_windows(values, mask)
-        scaled = (arr - self.mean) / self.std
+        scaled = (arr - mean) / std
         return jnp.where(observed, scaled, MISSING_VALUE_SENTINEL)
 
     def inverse_transform(
@@ -207,9 +207,9 @@ class FeatureScaler:
         jax.Array
             Original-scale windows; missing cells equal ``0.0``.
         """
-        self._require_fitted()
+        mean, std = self._require_fitted()
         arr, observed = _as_masked_windows(values, mask)
-        restored = arr * self.std + self.mean
+        restored = arr * std + mean
         return jnp.where(observed, restored, MISSING_VALUE_SENTINEL)
 
     def save(self, path: Path) -> Path:
@@ -225,13 +225,13 @@ class FeatureScaler:
         pathlib.Path
             The written path.
         """
-        self._require_fitted()
+        mean, std = self._require_fitted()
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             out,
-            mean=np.asarray(self.mean, dtype=np.float32),
-            std=np.asarray(self.std, dtype=np.float32),
+            mean=np.asarray(mean, dtype=np.float32),
+            std=np.asarray(std, dtype=np.float32),
             eps=np.asarray(self.eps, dtype=np.float32),
         )
         return out
@@ -257,16 +257,26 @@ class FeatureScaler:
             scaler.std = jnp.asarray(handle["std"], dtype=jnp.float32)
         return scaler
 
-    def _require_fitted(self) -> None:
-        """Raise if mean/std are missing.
+    def _require_fitted(self) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Return fitted mean/std, or raise if missing.
+
+        Returns
+        -------
+        mean : jax.Array
+            Per-feature means shaped ``(F,)``.
+        std : jax.Array
+            Per-feature stds shaped ``(F,)``.
 
         Raises
         ------
         RuntimeError
             When the scaler has not been fitted or loaded.
         """
-        if not self.is_fitted():
+        mean = self.mean
+        std = self.std
+        if mean is None or std is None:
             raise RuntimeError("FeatureScaler must be fit() or load() first")
+        return mean, std
 
 
 def fit_scaler_on_train_split(

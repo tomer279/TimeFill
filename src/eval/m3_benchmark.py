@@ -32,6 +32,7 @@ import jax
 import jax.numpy as jnp
 
 from src.baselines import LinearImputer, LocfImputer
+from src.data.config import SdeConfig
 from src.data.schema import TIME_AXIS
 from src.eval.m2_val_impute import OriginalScaleRestorer
 from src.eval.m3_data import (
@@ -135,7 +136,7 @@ class ImputeContextRequest:
     ------------------
     model : ConditionalScoreNet
         Loaded score network.
-    sde_cfg :
+    sde_cfg : SdeConfig
         ``SdeConfig`` from ``real_m2.yaml``.
     t_eps : float
         Terminal diffusion time.
@@ -144,7 +145,7 @@ class ImputeContextRequest:
     """
 
     model: ConditionalScoreNet
-    sde_cfg: object
+    sde_cfg: SdeConfig
     t_eps: float
     solver_steps: int
 

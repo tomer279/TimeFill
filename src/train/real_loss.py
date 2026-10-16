@@ -336,9 +336,35 @@ def dsm_settings_from_real_config(config: RealM2Config) -> DSMLossSettings:
     settings.validate()
     return settings
 
-def _blend_compose_results(rand_out, block_out, use_block):
-    """Elementwise select block vs random compose triples."""
-    return tuple(
-        jnp.where(use_block, block_part, rand_part)
-        for rand_part, block_part in zip(rand_out, block_out, strict=True)
+def _blend_compose_results(
+        rand_out: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        block_out: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        use_block: jnp.ndarray | bool,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Elementwise select block vs random compose triples.
+
+    Parameters
+    ----------
+    rand_out : tuple of jax.Array
+        ``(x_obs, m_train, m_artificial)`` from ``compose_random``.
+    block_out : tuple of jax.Array
+        ``(x_obs, m_train, m_artificial)`` from ``compose_block``.
+    use_block : jax.Array or bool
+        Selector; true chooses the block compose result.
+
+    Returns
+    -------
+    x_obs : jax.Array
+        Selected observations.
+    m_train : jax.Array
+        Selected training mask.
+    m_artificial : jax.Array
+        Selected artificial mask.
+    """
+    x_rand, m_train_rand, m_art_rand = rand_out
+    x_block, m_train_block, m_art_block = block_out
+    return (
+        jnp.where(use_block, x_block, x_rand),
+        jnp.where(use_block, m_train_block, m_train_rand),
+        jnp.where(use_block, m_art_block, m_art_rand),
     )

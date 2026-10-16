@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 _TMP_SUFFIX = ".tmp"
 _DEFAULT_DPI = 120
@@ -20,7 +20,7 @@ _RETRY_SLEEP_S = 0.05
 
 
 def save_figure(
-        fig: plt.Figure,
+        fig: Figure,
         path: Path | str,
         dpi: int = _DEFAULT_DPI,
 ) -> Path:
@@ -60,7 +60,7 @@ def save_figure(
 
 
 def _save_via_temp(
-        fig: plt.Figure,
+        fig: Figure,
         out: Path,
         dpi: int,
 ) -> Path:

@@ -1,11 +1,17 @@
-"""Streamlit product surface for Milestone 4 (TimeFill).
+"""Streamlit product surface for Milestone 4 / 6 (TimeFill).
 
 Modules
 -------
 schema_validate
     Upload / sample CSV schema checks and missingness summaries.
+flexible_ingest
+    Infer / map arbitrary CSV columns into a ``ValidatedFrame`` (M6).
+preview_ingest
+    Schema / missingness preview helpers and pretrained impute gate (M6).
+ui_session
+    Non-Streamlit session types and CSV → preview payload assembly.
 window_adapter
-    CSV → ``(x, m)`` windows under the M1/M2/M4 tensor contract.
+    CSV → ``(x, m)`` windows; Exact pad path + flexible bin/reject (M6).
 m4_config
     Load / validate ``configs/app_m4.yaml``.
 session_impute
@@ -17,5 +23,5 @@ plot_impute
 demo_eval_smoke
     Tiny in-app MCAR smoke metrics (not the M3 report).
 streamlit_app
-    Phase 5 Streamlit entrypoint (``streamlit run app/streamlit_app.py``).
+    Streamlit entrypoint: Exact Beijing impute + Flexible preview / gate.
 """

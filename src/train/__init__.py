@@ -16,6 +16,10 @@ real_val
     Lightweight reverse-impute validation snapshot hooks.
 real_loop
     M2 real-window trainer and train entrypoint.
+adapt_m7
+    M7 upload-adapt session API (scaler fit, promote artifacts).
+adapt_loop
+    M7 capped DSM train loop (no checkpoint I/O).
 
 Classes
 -------
@@ -41,6 +45,10 @@ M2TrainerBundle
     Dependencies for ``M2Trainer``.
 M2Trainer
     Real-window AdamW loop with checkpoints and val impute snapshots.
+AdaptSessionRequest
+    Bundled inputs for one M7 upload-adapt session.
+AdaptSessionResult
+    Successful M7 session artifacts and in-memory model / scaler.
 
 Functions
 ---------
@@ -62,8 +70,15 @@ dsm_settings_from_real_config
     Build ``DSMLossSettings`` from ``RealM2Config``.
 run_m2_training
     Convenience entrypoint for processed real windows → ``artifacts/m2/``.
+run_adapt_session
+    M7 upload-adapt entrypoint → ``artifacts/m7/<run_id>/``.
 """
 
+from src.train.adapt_m7 import (
+    AdaptSessionRequest,
+    AdaptSessionResult,
+    run_adapt_session,
+)
 from src.train.artifacts import (
     ArtifactPaths,
     TrainHistory,
@@ -96,6 +111,8 @@ from src.train.real_loop import (
 )
 
 __all__ = [
+    "AdaptSessionRequest",
+    "AdaptSessionResult",
     "ArtifactPaths",
     "ConditionalDSMLoss",
     "DSMLossSettings",
@@ -112,6 +129,7 @@ __all__ = [
     "dsm_settings_from_real_config",
     "load_checkpoint",
     "resolve_artifact_paths",
+    "run_adapt_session",
     "run_m1_training",
     "run_m2_training",
     "save_checkpoint",

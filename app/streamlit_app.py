@@ -1,14 +1,15 @@
-"""Milestone 4 / 6 Streamlit product UI (Phase 5 + M6 preview).
+"""Milestone 4 / 6 / 7 Streamlit product UI.
 
 Sidebar demo-mask / ``K`` / solver / quantile knobs; main pane upload or
-bundled sample → schema / missingness preview → reverse-SDE impute when
-the pretrained gate allows → Plotly charts → mean-fill download.
+bundled sample → schema / missingness preview → optional M7 Run adapt →
+reverse-SDE impute when the gate allows → Plotly charts → mean-fill
+download.
 
 Exact Beijing (bundled sample + exact-schema upload) remains the
-pretrained impute path. Flexible uploads preview schema / missingness /
-windows (or reject) and **block impute** unless mapped features exactly
-match the loaded checkpoint/scaler (ASSUMPTIONS M6). Fine-tune controls
-are omitted (M7). Irregular wall-clock SDE dynamics remain deferred.
+zero-train pretrained impute path. Flexible uploads preview first; Run
+adapt binds a session checkpoint/scaler under ``artifacts/m7/`` and lifts
+the impute gate (ASSUMPTIONS M7). Irregular wall-clock SDE dynamics remain
+deferred.
 
 Session types and CSV → payload assembly live in ``app.ui_session``.
 
@@ -25,6 +26,7 @@ main
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd  # type: ignore # pylint: disable = import-error
@@ -36,6 +38,14 @@ if str(_REPO_ROOT) not in sys.path:
 
 # Local package imports follow path bootstrap (Streamlit script entry).
 # pylint: disable=wrong-import-position
+from app.adapt_session_ui import (
+    AdaptRunRequest,
+    BoundAdaptSession,
+    caps_display_from_config,
+    make_upload_fingerprint,
+    prepare_adapt_windows,
+    run_ui_adapt,
+)
 from app.demo_eval_smoke import DemoEvalSmokeRequest, run_demo_eval_smoke
 from app.export_frames import (
     MeanFillExportRequest,
@@ -50,7 +60,7 @@ from app.plot_impute import (
     figure_imputed_mean_bands,
     figure_original_with_gaps,
 )
-from app.preview_ingest import MODE_EXACT_BEIJING
+from app.preview_ingest import MODE_EXACT_BEIJING, MODE_FLEXIBLE
 from app.session_impute import SessionImputeResult, SessionImputer
 from app.ui_session import (
     ImputeSectionContext,
@@ -60,11 +70,21 @@ from app.ui_session import (
     UiSolverControls,
     build_bundled_payload,
     build_upload_payload_from_bytes,
+    refresh_impute_gate,
 )
 from app.window_adapter import AdaptedWindows
+from src.data.adapt_config import (
+    AdaptCliOverrides,
+    AdaptLoopCliOverrides,
+    AdaptM7Config,
+    AdaptWindowCliOverrides,
+    apply_adapt_cli_overrides,
+    load_adapt_m7_config,
+)
 # pylint: enable=wrong-import-position
 
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "app_m4.yaml"
+_DEFAULT_ADAPT_CONFIG = _REPO_ROOT / "configs" / "adapt_m7.yaml"
 _Q_LOW_INDEX = 0
 _Q_HIGH_INDEX = 1
 _DEFAULT_QUANTILE_LOW = 0.1
@@ -88,6 +108,9 @@ _UCI_BEIJING_URL = (
 _PRSA_ZIP_NAME = "PRSA2017_Data_20130301-20170228.zip"
 _SESSION_RESULT_KEY = "m4_impute_result"
 _SESSION_FEATURES_KEY = "m4_feature_names"
+_SESSION_ADAPT_KEY = "m7_bound_adapt"
+_MODE_SCRATCH = "scratch"
+_MIN_SEQ_LEN = 2
 
 
 @st.cache_resource
@@ -124,6 +147,56 @@ def _load_imputer(path_str: str) -> SessionImputer:
     return SessionImputer.from_app_config(path_str)
 
 
+@st.cache_resource
+def _load_adapt_config(path_str: str) -> AdaptM7Config:
+    """Load and cache the M7 adapt YAML.
+
+    Parameters
+    ----------
+    path_str : str
+        Path to ``configs/adapt_m7.yaml``.
+
+    Returns
+    -------
+    AdaptM7Config
+        Validated smoke-cap config.
+    """
+    return load_adapt_m7_config(path_str)
+
+
+def _clear_impute_session_keys() -> None:
+    """Drop prior impute chart / download session state."""
+    st.session_state.pop(_SESSION_RESULT_KEY, None)
+    st.session_state.pop(_SESSION_FEATURES_KEY, None)
+
+
+def _resolve_bound_session(fingerprint: str) -> BoundAdaptSession | None:
+    """Return a fingerprint-matching bound adapt session, if any.
+
+    Parameters
+    ----------
+    fingerprint : str
+        Current upload fingerprint.
+
+    Returns
+    -------
+    BoundAdaptSession or None
+        Valid bind, or ``None`` after clearing a stale bind.
+    """
+    bound = st.session_state.get(_SESSION_ADAPT_KEY)
+    if bound is None:
+        return None
+    if not isinstance(bound, BoundAdaptSession):
+        st.session_state.pop(_SESSION_ADAPT_KEY, None)
+        _clear_impute_session_keys()
+        return None
+    if not bound.matches(fingerprint):
+        st.session_state.pop(_SESSION_ADAPT_KEY, None)
+        _clear_impute_session_keys()
+        return None
+    return bound
+
+
 def _render_sidebar(config: AppM4Config) -> UiSidebarState:
     """Draw sidebar knobs and return a frozen state object.
 
@@ -139,9 +212,9 @@ def _render_sidebar(config: AppM4Config) -> UiSidebarState:
     """
     st.sidebar.header("Settings")
     st.sidebar.caption(
-        "Uses a trained model (no fine-tuning here). Defaults aim for a few "
-        "minutes; raising draws or quality steps slows things down, "
-        "especially on CPU."
+        "Exact Beijing uses the pretrained model (no training). Flexible "
+        "schemas need Run adapt first. Raising draws or quality steps "
+        "slows things down, especially on CPU."
     )
     with st.sidebar.expander("Advanced (research names)", expanded=False):
         st.caption(
@@ -292,7 +365,7 @@ def _load_upload_payload(config: AppM4Config) -> UiSessionPayload | None:
         type="csv",
         help=(
             "Exact pollutant names enable pretrained impute. Other schemas "
-            "preview only unless features match the loaded checkpoint. "
+            "preview first; use Run adapt (M7) to unlock session impute. "
             "Columns are never silently remapped to PM2.5…O3."
         ),
     )
@@ -324,9 +397,9 @@ def _render_upload_guidance(config: AppM4Config) -> None:
         "Multi-Site Air-Quality (PRSA)**. Exact-schema uploads (pollutant "
         "names below) can be imputed. Other CSVs use **Flexible ingest**: "
         "schema / missingness preview only unless features **exactly** "
-        "match the loaded checkpoint — then you still need matching "
-        "weights. Columns are **never** silently renamed to "
-        f"`{feature_list}`. M6 is not a universal imputer (see M7)."
+        "match the loaded checkpoint. Otherwise use **Run adapt** below "
+        "for a file-local session model. Columns are **never** silently "
+        f"renamed to `{feature_list}`. One-file adapt is not universal SOTA."
     )
     with st.expander(
             "Exact Beijing CSV checklist (pretrained path)",
@@ -351,8 +424,8 @@ def _render_upload_guidance(config: AppM4Config) -> None:
             f"(do not rely on zeros to mean missing)\n"
             f"- **Shape:** contiguous rows; the app cuts segments of length "
             f"**{seq_len}** (short tails are padded)\n"
-            f"- **Flexible uploads:** preview schema / missingness; impute "
-            f"stays gated unless features match the checkpoint (or use M7)"
+            f"- **Flexible uploads:** preview schema / missingness; then "
+            f"**Run adapt** to unlock session impute (M7)"
         )
 
 
@@ -543,13 +616,174 @@ def _render_about_this_model(config: AppM4Config) -> None:
             f"`{_PRSA_ZIP_NAME}`). "
             f"It fills the six pollutants **{feature_list}** on fixed "
             f"**{seq_len}-step** windows after hourly resampling.\n\n"
-            f"**Uploading a CSV does not retrain the model** — Exact Beijing "
-            f"schema runs gap-filling (inference). Flexible schemas preview "
-            f"missingness only unless features match this checkpoint; "
-            f"otherwise use Milestone 7 train-on-upload / adapt or a "
-            f"compatible checkpoint. This demo does not fine-tune on your "
-            f"upload."
+            f"**Exact Beijing** runs gap-filling with pretrained weights "
+            f"(no training). **Flexible** schemas preview first; **Run "
+            f"adapt** trains a smoke-capped **session** model under "
+            f"`artifacts/m7/` (does not overwrite M2 claim weights). "
+            f"File-local adapt is not a cross-dataset SOTA claim."
         )
+
+
+def _effective_adapt_config(
+        base: AdaptM7Config,
+        seq_len: int,
+) -> AdaptM7Config:
+    """Apply UI ``seq_len`` override without raising other caps.
+
+    Parameters
+    ----------
+    base : AdaptM7Config
+        YAML defaults.
+    seq_len : int
+        Effective window length from Advanced smoke knobs.
+
+    Returns
+    -------
+    AdaptM7Config
+        Config used for prepare + ``run_ui_adapt``.
+    """
+    return apply_adapt_cli_overrides(
+        base,
+        AdaptCliOverrides(
+            window=AdaptWindowCliOverrides(seq_len=int(seq_len)),
+            loop=AdaptLoopCliOverrides(),
+        ),
+    )
+
+
+def _run_adapt_button(
+        payload: UiSessionPayload,
+        fingerprint: str,
+        config: AdaptM7Config,
+) -> None:
+    """Execute Run adapt and bind or surface a user-facing failure.
+
+    Parameters
+    ----------
+    payload : UiSessionPayload
+        Current upload / sample payload.
+    fingerprint : str
+        Upload fingerprint for session binding.
+    config : AdaptM7Config
+        Effective smoke-cap config.
+    """
+    windows, adapt_error = prepare_adapt_windows(
+        payload.frame,
+        int(config.geometry.seq_len),
+        config.geometry.max_windows,
+    )
+    if windows is None:
+        detail = adapt_error or "window adapt failed"
+        st.error(
+            f"**Too little data for adapt**\n\n{detail} "
+            "Lower seq_len in Advanced smoke knobs or upload a longer series."
+        )
+        return
+    with st.spinner(
+            "Running smoke-capped adapt… may take several minutes on CPU. "
+            f"Hard stop at {config.caps.timeout_seconds:.0f}s."
+    ):
+        outcome = run_ui_adapt(
+            AdaptRunRequest(
+                windows=windows,
+                config=config,
+                mode=_MODE_SCRATCH,
+                fingerprint=fingerprint,
+            )
+        )
+    if not outcome.ok() or outcome.session is None:
+        st.error(outcome.failure_markdown())
+        return
+    st.session_state[_SESSION_ADAPT_KEY] = outcome.session
+    _clear_impute_session_keys()
+    st.success(outcome.session.describe())
+
+
+def _adapt_panel_body(
+        payload: UiSessionPayload,
+        fingerprint: str,
+        base_config: AdaptM7Config,
+) -> BoundAdaptSession | None:
+    """Render caps, Advanced seq_len, and Run adapt.
+
+    Parameters
+    ----------
+    payload : UiSessionPayload
+        Current payload.
+    fingerprint : str
+        Upload fingerprint.
+    base_config : AdaptM7Config
+        YAML smoke caps.
+
+    Returns
+    -------
+    BoundAdaptSession or None
+        Bound session when fingerprint still matches.
+    """
+    default_seq = int(base_config.geometry.seq_len)
+    with st.expander("Advanced smoke knobs", expanded=False):
+        st.caption(
+            "Short fixtures may need a smaller seq_len than the M6 preview "
+            "default (e.g. toy non-Beijing CSV). Does not write to "
+            "artifacts/m2/."
+        )
+        seq_len = st.number_input(
+            "Adapt window length (seq_len)",
+            min_value=_MIN_SEQ_LEN,
+            value=default_seq,
+            step=1,
+            help="Used for adapt windows; may differ from preview seq_len.",
+        )
+    effective = _effective_adapt_config(base_config, int(seq_len))
+    caps = caps_display_from_config(effective, _MODE_SCRATCH)
+    st.caption("Smoke caps: " + " · ".join(caps.as_lines()))
+    st.caption(caps.eta_note())
+    if st.button("Run adapt", type="secondary"):
+        _run_adapt_button(payload, fingerprint, effective)
+    return _resolve_bound_session(fingerprint)
+
+
+def _render_adapt_panel(
+        payload: UiSessionPayload,
+        fingerprint: str,
+) -> BoundAdaptSession | None:
+    """Show Run adapt after preview; return bound session if present.
+
+    Parameters
+    ----------
+    payload : UiSessionPayload
+        Current ingest payload.
+    fingerprint : str
+        Upload fingerprint.
+
+    Returns
+    -------
+    BoundAdaptSession or None
+        Session bind for gate lift / impute.
+    """
+    try:
+        base_config = _load_adapt_config(str(_DEFAULT_ADAPT_CONFIG))
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        st.warning(f"Adapt config unavailable: {exc}")
+        return _resolve_bound_session(fingerprint)
+    st.subheader("Adapt on this upload (M7)")
+    st.caption(
+        "Train a **session** model under smoke caps, then impute. "
+        "Artifacts go under ``artifacts/m7/`` — never overwrites Beijing "
+        "M2 claim weights. File-local only; not universal SOTA."
+    )
+    bound = _resolve_bound_session(fingerprint)
+    if bound is not None:
+        st.info(bound.describe())
+    if payload.ingest_mode == MODE_EXACT_BEIJING:
+        with st.expander(
+                "Optional: adapt instead of pretrained",
+                expanded=False,
+        ):
+            return _adapt_panel_body(payload, fingerprint, base_config)
+    if payload.ingest_mode == MODE_FLEXIBLE:
+        return _adapt_panel_body(payload, fingerprint, base_config)
+    return bound
 
 
 def _render_impute_section(context: ImputeSectionContext) -> None:
@@ -561,18 +795,19 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
         Payload, sidebar, imputer, and config.
     """
     payload = context.payload
-    if not payload.can_impute():
-        st.session_state.pop(_SESSION_RESULT_KEY, None)
-        st.session_state.pop(_SESSION_FEATURES_KEY, None)
+    windows = context.active_windows()
+    if not payload.impute_gate.is_allowed() or windows is None:
+        _clear_impute_session_keys()
         st.warning(payload.impute_gate.reason)
-        return
-    windows = payload.windows
-    if windows is None:
-        st.warning(payload.impute_gate.reason)
+        if (
+                context.bound_session is None
+                and payload.ingest_mode == MODE_FLEXIBLE
+        ):
+            st.info("Run adapt above to unlock impute for this schema.")
         return
     if st.button("Fill missing values", type="primary"):
         with st.spinner("Filling gaps… this can take a few minutes on CPU."):
-            result = context.imputer.impute(
+            result = context.active_imputer().impute(
                 context.sidebar.impute_request(
                     windows,
                     context.seed_mask(),
@@ -597,14 +832,13 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
 
 
 def main() -> None:
-    """Run the TimeFill Streamlit app (M4 Exact + M6 Flexible preview)."""
+    """Run the TimeFill Streamlit app (Exact / Flexible / M7 adapt)."""
     st.set_page_config(page_title="TimeFill", layout="wide")
     st.title("TimeFill — fill gaps in air-quality time series")
     st.caption(
         "Upload sensor data (or try the Beijing sample), preview schema / "
-        "missingness, then fill gaps when the pretrained checkpoint "
-        "matches. Flexible CSVs preview first; they are not a universal "
-        "imputer."
+        "missingness, optionally Run adapt for Flexible schemas, then fill "
+        "gaps. Exact Beijing pretrained path needs no training."
     )
     config_path = str(_DEFAULT_CONFIG)
     try:
@@ -627,16 +861,37 @@ def main() -> None:
         st.stop()
         return
     _render_preview_panel(payload)
+    fingerprint = make_upload_fingerprint(
+        payload.source_label,
+        payload.ingest_mode,
+        payload.frame.feature_names,
+    )
+    bound = _render_adapt_panel(payload, fingerprint)
+    session_features = None if bound is None else bound.feature_names
+    payload = refresh_impute_gate(
+        payload,
+        config.schema.feature_names,
+        session_features,
+    )
+    if bound is not None:
+        payload = replace(payload, windows=bound.windows)
     _render_impute_section(
         ImputeSectionContext(
             payload=payload,
             sidebar=sidebar,
             imputer=imputer,
             config=config,
+            bound_session=bound,
         )
     )
-    if payload.can_impute() and payload.windows is not None:
-        _render_demo_eval(imputer, config, payload.windows)
+    active_imputer = (
+        bound.imputer if bound is not None else imputer
+    )
+    active_windows = (
+        bound.windows if bound is not None else payload.windows
+    )
+    if payload.can_impute() and active_windows is not None:
+        _render_demo_eval(active_imputer, config, active_windows)
 
 
 if __name__ == "__main__":

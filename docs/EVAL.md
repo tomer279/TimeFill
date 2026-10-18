@@ -259,6 +259,10 @@ exactly (no silent remaps). **On-the-fly fine-tune is deferred for v1**
 in-app “eval” is a small smoke slice only. Irregular wall-clock as first-class
 SDE dynamics remains deferred (timestamps for resample / display only).
 
+Post-v1 **M7** adds capped upload-adapt (scratch / fine-tune-when-compatible);
+that is **not** the v1 M4 happy path and is **not** an M3 claim expansion
+(see § M7 upload-adapt smoke).
+
 ## M6 flexible ingest (does not expand this contract)
 
 Post-v1 **schema-flexible ingest** (`ASSUMPTIONS.md` Milestone 6;
@@ -273,6 +277,22 @@ Post-v1 **schema-flexible ingest** (`ASSUMPTIONS.md` Milestone 6;
 - Does **not** claim that arbitrary CSVs can be imputed with the M2 Beijing
   checkpoint. Flexible-schema **impute** needs a compatible checkpoint /
   scaler or **M7** train-on-upload.
+
+## M7 upload-adapt smoke (does not expand this contract)
+
+Post-v1 **train-on-upload / adapt** (`ASSUMPTIONS.md` Milestone 7;
+`docs/milestone_7_walkthrough.md`) may print optional MAE / RMSE / CRPS /
+coverage on **artificial gaps** on a **held-out window split of that upload**
+(default MCAR **0.30**, train fraction **0.80**, file-local only). That path:
+
+- Does **not** change the frozen Beijing `F = 6` feature list, splits,
+  missingness protocols, or metrics above.
+- Must **not** merge upload-adapt smoke CSVs / numbers into M3 Beijing claim
+  tables (`artifacts/m3/`, `docs/m3_failure_notes.md`, or README Evidence).
+- Does **not** advertise a universal / cross-dataset imputer from one-file
+  adapt. Session artifacts live under `artifacts/m7/<run_id>/` and must
+  **not** overwrite `artifacts/m2/checkpoints/*`.
+- Exact Beijing pretrained demo (M4 / M2 weights) remains a separate path.
 
 ## Out of scope here
 

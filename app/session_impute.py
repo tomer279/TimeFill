@@ -1,4 +1,4 @@
-"""Non-UI M4 impute service (Streamlit calls this later).
+"""Non-UI M4 / M7 impute service (Streamlit calls this later).
 
 Classes
 -------
@@ -14,8 +14,10 @@ ImputeRunMeta
     Effective ``K`` / solver steps for the run.
 SessionImputeResult
     Nested original-unit impute outputs for export / charts.
+SessionAssetRequest
+    In-memory session model / scaler / SDE knobs for M7 adapt impute.
 SessionImputer
-    Load pretrained assets and run reverse-SDE imputation.
+    Load pretrained or session assets and run reverse-SDE imputation.
 
 Functions
 ---------
@@ -511,8 +513,58 @@ class _PreparedObservations:
 
 
 @dataclass(frozen=True)
+class SessionAssetRequest:
+    """In-memory session assets for reverse-SDE impute (M7).
+
+    Public methods
+    --------------
+    validate
+        Check ``t_eps``, sample knobs, and scaler ``F``.
+    n_features
+        Scaler feature count.
+
+    Instance variables
+    ------------------
+    model : ConditionalScoreNet
+        Session score net.
+    scaler : FeatureScaler
+        Train-only session scaler.
+    sde_cfg : SdeConfig
+        VP-SDE schedule used during adapt.
+    t_eps : float
+        Terminal diffusion time.
+    sample : AppM4SampleKnobs
+        Effective ``K`` / steps / seeds.
+    """
+
+    model: ConditionalScoreNet
+    scaler: FeatureScaler
+    sde_cfg: SdeConfig
+    t_eps: float
+    sample: AppM4SampleKnobs
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if assets are inconsistent."""
+        if self.t_eps <= 0.0:
+            raise ValueError(f"t_eps must be positive, got {self.t_eps}")
+        self.sample.validate()
+        if self.scaler.n_features() <= 0:
+            raise ValueError("scaler must have positive n_features")
+
+    def n_features(self) -> int:
+        """Return scaler ``F``.
+
+        Returns
+        -------
+        int
+            Feature count.
+        """
+        return self.scaler.n_features()
+
+
+@dataclass(frozen=True)
 class _LoadedBundle:
-    """Internal pretrained asset bundle for ``SessionImputer``.
+    """Internal asset bundle for ``SessionImputer``.
 
     Public methods
     --------------
@@ -522,11 +574,12 @@ class _LoadedBundle:
         Short asset summary.
     """
 
-    config: AppM4Config
     model: ConditionalScoreNet
     scaler: FeatureScaler
     t_eps: float
     sde_cfg: SdeConfig
+    sample: AppM4SampleKnobs
+    config: AppM4Config | None = None
 
     def n_features(self) -> int:
         """Return ``F`` from the loaded scaler.
@@ -544,33 +597,43 @@ class _LoadedBundle:
         Returns
         -------
         str
-            Path summary from the app config.
+            Path summary from the app config, or session ``F`` / ``K``.
         """
+        if self.config is None:
+            return (
+                f"session_assets F={self.scaler.n_features()} "
+                f"K={self.sample.k_samples} "
+                f"steps={self.sample.solver_steps}"
+            )
         return self.config.paths.describe()
 
 
 class SessionImputer:
-    """Pretrained reverse-SDE impute path for M4 (no Streamlit dependency).
+    """Reverse-SDE impute path for M4 pretrained or M7 session assets.
 
     Public methods
     --------------
     from_app_config
         Load checkpoint, scaler, and SDE knobs from ``app_m4.yaml``.
+    from_session_assets
+        Bind an in-memory adapt session model / scaler (M7).
     impute
         Run normalize → reverse SDE → inverse → mean-fill merge.
 
     Instance variables
     ------------------
-    config : AppM4Config
-        Product config.
+    config : AppM4Config or None
+        Product config when loaded from ``app_m4.yaml``.
     model : ConditionalScoreNet
-        Deserialized score network.
+        Score network (pretrained or session).
     scaler : FeatureScaler
-        Train scaler from disk.
+        Train scaler from disk or adapt session.
     t_eps : float
-        Terminal diffusion time from ``real_m2.yaml``.
+        Terminal diffusion time.
     sde_cfg : SdeConfig
-        ``SdeConfig`` matching the M2 checkpoint.
+        ``SdeConfig`` matching the bound model.
+    sample : AppM4SampleKnobs
+        Default ``K`` / steps / seeds for ``impute``.
     """
 
     def __init__(self, bundle: _LoadedBundle) -> None:
@@ -586,6 +649,7 @@ class SessionImputer:
         self.scaler = bundle.scaler
         self.t_eps = bundle.t_eps
         self.sde_cfg: SdeConfig = bundle.sde_cfg
+        self.sample = bundle.sample
 
     @classmethod
     def from_app_config(cls, path: Path | str) -> SessionImputer:
@@ -624,11 +688,37 @@ class SessionImputer:
         )
         model = load_checkpoint(config.paths.checkpoint, template)
         bundle = _LoadedBundle(
-            config=config,
             model=model,
             scaler=scaler,
             t_eps=float(real_cfg.train.protocol.t_eps),
             sde_cfg=real_cfg.sde,
+            sample=config.sample,
+            config=config,
+        )
+        return cls(bundle)
+
+    @classmethod
+    def from_session_assets(cls, request: SessionAssetRequest) -> SessionImputer:
+        """Build an imputer from in-memory adapt session assets.
+
+        Parameters
+        ----------
+        request : SessionAssetRequest
+            Model, scaler, SDE, ``t_eps``, and sample knobs.
+
+        Returns
+        -------
+        SessionImputer
+            Ready for ``impute`` (no M2 claim paths required).
+        """
+        request.validate()
+        bundle = _LoadedBundle(
+            model=request.model,
+            scaler=request.scaler,
+            t_eps=float(request.t_eps),
+            sde_cfg=request.sde_cfg,
+            sample=request.sample,
+            config=None,
         )
         return cls(bundle)
 
@@ -646,7 +736,7 @@ class SessionImputer:
             Mean fill (observed preserved), bands, and samples.
         """
         request.validate()
-        knobs = self.config.sample.effective(
+        knobs = self.sample.effective(
             request.k_samples,
             request.solver_steps,
         )

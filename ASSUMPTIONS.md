@@ -671,3 +671,236 @@ Beijing columns to “fix” a reject. Keys below match
 - Claiming a universal imputer
 - Rewriting M1–M5 tensor contracts or silently changing Beijing `EVAL.md`
   claim protocols
+
+---
+
+# Milestone 7 Assumptions (train-on-upload / adapt)
+
+This section extends M1–M6 for **post-v1 train-on-upload / adapt**. M1–M6
+contracts above remain in force. M7 does **not** redefine the tensor / mask
+alphabet, the missing-value sentinel, Beijing `F = 6` claim tables, M2/M3
+training or report protocols, or the Exact Beijing pretrained Streamlit path.
+
+## Carry-forward (unchanged)
+
+- Values and masks `(B, T, F)`; default **`T = seq_len = 64`**; `1` = observed,
+  `0` = missing; missing `x` cells are sentinel **`0.0`**. Never infer
+  missingness from nonzero values in `x`.
+- **M6 ingest:** Exact Beijing vs Flexible; reject thresholds; pad /
+  multi-window; no silent Beijing remaps.
+- **Normalization:** DSM / reverse SDE in scaled space; display / download in
+  original units via `FeatureScaler.inverse_transform`.
+- **Train-only scaler (M2 spirit):** fit on **native-observed cells in the
+  declared train split only**; never on held-out artificial-gap targets used
+  for smoke quality check.
+- **v1 evidence path:** Beijing `F = 6` M2 checkpoint + scaler; M3 vs LOCF /
+  linear only — frozen (`docs/EVAL.md`).
+- **Irregular wall-clock as first-class SDE dynamics remains deferred.**
+  Timestamps for bin / display only.
+- **Impute API:** VP-SDE + Diffrax reverse sampling, `K` samples, quantile
+  bands, observed-context conditioning (same spirit as M1 / M4).
+- **`ConditionalScoreNet.n_features` is static** (`eqx.field(static=True)`).
+  Fine-tune from a Beijing (`F = 6`) base is allowed **only when** upload
+  `F` matches base `F`.
+
+## Two product paths after M7
+
+| Path | Ingest | Model | Impute |
+|---|---|---|---|
+| **Exact Beijing pretrained (unchanged)** | Exact (or Flexible with exact name/`F` match) | Load M2 claim weights + scaler | M4 session impute; no adapt required |
+| **Upload-adapt** | M6 Flexible (or Exact) → windows | Short adapt → **session** checkpoint + scaler | Reverse-SDE impute → download mean ± bands |
+
+- Exact Beijing pretrained demo stays intact and independent of adapt.
+- Upload-adapt **never** overwrites `artifacts/m2/checkpoints/*` as a
+  “universal” model.
+
+## Adapt modes
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Train-from-scratch** | Default when `F ≠` base `F`; always available | Init `ConditionalScoreNet(n_features=F)` for the upload’s `F`; train under smoke caps |
+| **Fine-tune-from-base** | Opt-in only when `F` equals base `F` | Load base checkpoint (default: M2 Beijing) and continue DSM under smoke caps |
+
+- **Refuse fine-tune** when `F ≠` base `F`. Surface a clear message and offer
+  scratch. Do not pad / truncate the feature axis to force a load.
+- **Fine-tune name policy (locked):** base `feature_names` must equal the
+  upload’s mapped `features[]` in order, **or** the user must explicitly
+  confirm same semantics. **Silent remap of unknown columns to `PM2.5`…`O3`
+  remains banned** (same as M6).
+- Default product choice when both are legal: **scratch** unless the user
+  opts into fine-tune.
+
+## Train / smoke split and scaler leakage
+
+- After M6 window adapt, declare a deterministic split of windows:
+  - **Train fraction:** **`0.80`**
+  - **Smoke fraction:** **`0.20`**
+  - Split by **window index** in adapt order (no random permutation of
+    windows for the scaler fit path; optional seeded shuffle of *train*
+    window order for SGD only does **not** move smoke cells into fit).
+- Fit `FeatureScaler` on **train-split native-observed** cells only
+  (`m_native == 1` within train windows). Apply the same stats to smoke /
+  impute windows.
+- Artificial gaps for smoke eval (MCAR / block) are applied **after** scaler
+  fit, only where `m_native == 1`, composing
+  `m = m_native * m_artificial` (M2/M3 spirit).
+- **Never** fold held-out artificial-gap smoke targets into scaler fit or into
+  DSM labels incorrectly.
+- DSM / reverse SDE stay in normalized space; downloads use
+  `inverse_transform`.
+
+## Locked smoke caps (Streamlit / CLI demo)
+
+Suitable for a short CPU demo, **not** a full M2 train. Keys match
+`configs/adapt_m7.yaml` when that skeleton is present.
+
+| Knob | Locked default |
+|---|---|
+| `train.epochs` | **5** |
+| `train.steps_per_epoch` | **20** |
+| `train.batch_size` | **4** |
+| `sample.K_samples` | **8** |
+| `sample.solver_steps` | **50** |
+| `adapt.timeout_seconds` | **600** (10 minutes wall-clock) |
+| `adapt.min_windows` | **2** |
+| `adapt.train_fraction` | **0.80** |
+| `train.seed` | **0** |
+| `seeds.mask` | **0** |
+| `seeds.sample` | **1** |
+| `train.obs_loss_weight` | **0.0** |
+| `train.lr` | **0.0003** (same order as `configs/real_m2.yaml`) |
+
+- Raising caps for longer CLI runs is allowed only via explicit config / CLI
+  overrides; **defaults stay smoke-capped**.
+- UI / CLI must surface the effective caps (epochs, timeout, `K`, steps).
+
+## Min data and M6 rejects
+
+- Upload must pass **M6 reject thresholds** first (`min_rows`, observed-rate
+  floors, `max_features`, schema-invalid) — see Milestone 6.
+- Additionally for adapt: require **`n_windows ≥ 2`** after M6 window adapt
+  (and global observed rate still ≥ **0.10**).
+- Too little data → **user-facing reject**; do not start training.
+
+## Failure modes (abort without promoting best)
+
+| Failure | Behavior |
+|---|---|
+| Too little data / M6 reject / `n_windows < 2` | Do not start adapt; clear message |
+| Non-finite (NaN / Inf) train or val loss | **Abort**; do **not** save or promote a “best” checkpoint |
+| Wall-clock **`timeout_seconds` exceeded** | **Abort**; do not promote partial best as the session default |
+| OOM / resource error | **Abort**; clear message; no half-written global default |
+
+- On abort: leave any incomplete run dir unmarked as successful; do not bind
+  session impute to a failed run.
+- Never silently fall back to writing into `artifacts/m2/checkpoints/`.
+
+## Artifact layout
+
+- M7 run root: **`artifacts/m7/<run_id>/`**
+  - `best_score_net.eqx` — session score net (only after a **successful**
+    capped run that completed without abort)
+  - `feature_scaler.npz` — train-only scaler for this upload
+  - `adapt_meta.json` — `feature_names`, `F`, `T`, seeds, mode
+    (`scratch` / `fine_tune`), caps, run status
+- Optional: `loss_curves.csv` / smoke metric side files under the **same**
+  `run_id` dir.
+- **`run_id`:** opaque unique id (e.g. UTC stamp + short random suffix);
+  one adapt invocation → one directory.
+- **Never** default-write adapt outputs into `artifacts/m2/` or overwrite
+  M2 claim checkpoints / scaler as the sole universal model.
+- Optional config skeleton: **`configs/adapt_m7.yaml`** (caps, timeout,
+  `artifact_dir`, seeds). Do **not** wire Streamlit or the training loop to
+  it in WP0.
+
+## Smoke eval (file-local only)
+
+- Optional MAE / RMSE (and light CRPS if cheap) on artificial gaps on the
+  **held-out smoke** windows of **this upload**.
+- Default smoke artificial protocol (when enabled): MCAR rate **0.30**
+  (aligned with M4 demo-eval smoke), seed `seeds.mask = 0`.
+- Documented and labeled as **file-local smoke**, **not** a new EVAL / M3
+  claim and **not** cross-dataset SOTA.
+- **Banned:** merge upload-adapt smoke metrics into `artifacts/m3/`; rewrite
+  `docs/EVAL.md` Beijing protocols; advertise universal / cross-dataset SOTA
+  from one-file adapt.
+
+### Smoke protocol (locked defaults)
+
+| Knob | Locked default | Notes |
+|---|---|---|
+| Train / smoke **window** split | **80% / 20%** by window index (adapt order) | Scaler fit uses **train** windows only |
+| Artificial gaps | Applied **after** scaler fit on smoke windows | Only where `m_native == 1` |
+| Default mask | MCAR **`smoke_mcar_rate = 0.30`** | `seeds.mask = 0`; optional block uses `block_len` default **8** |
+| Metrics | MAE / RMSE / CRPS / coverage_50 / coverage_90 | Same metric cells as M3 spirit: artificial targets with GT only |
+| Sampler for smoke | `sample.K_samples = 8`, `sample.solver_steps = 50` | Smoke caps, not M3 report (`50` / `100`) |
+| Label | **“file-local smoke (this upload only)”** | CLI: `--smoke-eval`; UI: demo-check caption |
+| Artifact home | Under `artifacts/m7/<run_id>/` only (optional side files) | **Never** `artifacts/m3/` or `artifacts/m2/` |
+
+See also `docs/EVAL.md` § **M7 upload-adapt smoke** (does not expand the
+Beijing claim table).
+
+## Impute gate update (post-adapt)
+
+- **Exact Beijing pretrained:** unchanged — load M2 weights → impute (M4).
+- **Flexible (and Exact) after successful adapt:** session checkpoint +
+  scaler for **this** schema may **unlock impute** for the current session /
+  run (lift the M6 Flexible block that pointed at M7).
+- Gate must bind to the **session** bundle under `artifacts/m7/<run_id>/`,
+  not silently substitute Beijing weights on a mismatched schema.
+- Failed / aborted adapt does **not** unlock Flexible impute.
+
+## Downloads
+
+- Same as M4: **required** mean-fill CSV in original units (observed cells
+  preserved; targets = posterior mean); **optional** multi-sample long format.
+
+## Extension points (reuse inventory)
+
+| Module | Role for M7 (wrap / extend; do not fork blindly) |
+|---|---|
+| `src/train/real_loop.py` | `M2Trainer` / `RealConditionalDSMLoss` / train-step primitives — wrap with smoke caps + timeout; do not default `artifact_dir` to `artifacts/m2` |
+| `src/train/artifacts.py` | `ArtifactPaths`, `save_checkpoint` — point root at `artifacts/m7/<run_id>/` |
+| `src/data/normalize.py` | `FeatureScaler`, `fit_scaler_on_train_split` — train-native-observed only |
+| `src/models/score_net.py` | `ConditionalScoreNet(n_features=F)`; refuse fine-tune on `F` mismatch |
+| `app/preview_ingest.py` | `evaluate_impute_gate` — extend to allow session-bundle unlock after successful adapt |
+| `app/session_impute.py` | Load session ckpt/scaler vs M2 paths |
+| `app/flexible_ingest.py` / `app/window_adapter.py` | M6 ingest → `AdaptedWindows` input to adapt |
+| `app/ui_session.py` / `app/streamlit_app.py` | Product wiring: Streamlit adapt panel + CLI (WP2–WP3) |
+| `configs/real_m2.yaml` | Naming style for train / sample knobs; M2 claim paths stay read-only for fine-tune base |
+
+## Banned behaviors
+
+- Overwrite `artifacts/m2/checkpoints/*` as the “universal” model.
+- Fold held-out artificial-gap smoke targets into scaler fit or claim tables.
+- Merge upload-adapt smoke metrics into `artifacts/m3/` or rewrite EVAL
+  Beijing protocols.
+- Advertise universal / cross-dataset SOTA from one-file adapt.
+- Silent remap of unknown columns to `PM2.5`…`O3`.
+- Scope creep into **M8** gap routing or **M9** hosted checkpoint.
+- Fine-tune when `F ≠` base `F`.
+- Promote a checkpoint after NaN loss, timeout, or OOM abort.
+
+## Claim discipline (adapt ≠ Beijing evidence)
+
+- M7 is **file-local adapt**, not a new Beijing / M3 claim expansion.
+- Portfolio / README numbers remain Beijing-only until a later milestone
+  explicitly unlocks a new domain with measured evidence.
+- One successful non-Beijing smoke run does **not** prove a universal
+  imputer.
+
+## Irregular time (status)
+
+- **Deferred:** irregular wall-clock as first-class SDE dynamics is **not**
+  promoted in M7. Timestamps for bin / display only; dynamics remain regular
+  grid + masks.
+
+## Out of scope for M7
+
+- **M8** gap-regime routing (after adapt, single policy: always TimeFill)
+- **M9** hosted checkpoint, second-domain SOTA claims, stronger baselines as
+  product backends
+- True irregular-time Neural SDE
+- Full multi-hour UI train (smoke caps + timeout are the product default)
+- Rewriting M1–M6 tensor / mask / sentinel contracts
+- Silently changing Beijing `docs/EVAL.md` claim protocols

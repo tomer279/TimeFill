@@ -119,6 +119,31 @@ def test_impute_gate_allows_flexible_exact_match() -> None:
     assert gate.is_allowed()
 
 
+def test_impute_gate_allows_flexible_with_session_unlock() -> None:
+    """Flexible mismatch unlocks when session_features match mapped names."""
+    gate = evaluate_impute_gate(
+        _FLEX,
+        _BEIJING,
+        MODE_FLEXIBLE,
+        session_features=_FLEX,
+    )
+    assert gate.is_allowed()
+    reason = gate.reason.lower()
+    assert "session" in reason or "adapt" in reason
+    assert "m2" in reason or "beijing" in reason
+
+
+def test_impute_gate_session_mismatch_still_blocked() -> None:
+    """Session unlock requires feature-name equality with the upload."""
+    gate = evaluate_impute_gate(
+        _FLEX,
+        _BEIJING,
+        MODE_FLEXIBLE,
+        session_features=("other_a", "other_b"),
+    )
+    assert not gate.is_allowed()
+
+
 def test_preview_summary_for_non_beijing_fixture() -> None:
     """Fixture preview exposes schema + missingness; adapt may reject."""
     frame = ingest_flexible_csv(_FIXTURE)

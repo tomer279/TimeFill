@@ -24,7 +24,7 @@ select_ingest_mode
 features_match_checkpoint
     Exact name + count (+ order) match vs loaded schema names.
 evaluate_impute_gate
-    Allow Exact path, or Flexible only on checkpoint feature match.
+    Allow Exact path, Flexible checkpoint match, or M7 session unlock.
 try_adapt_flexible_windows
     Adapt with M6 reject policy; return windows or reject message.
 build_ingest_preview
@@ -70,6 +70,11 @@ _GATE_ALLOW_EXACT = (
 _GATE_ALLOW_FLEXIBLE_MATCH = (
     "Mapped features exactly match the loaded checkpoint/scaler; "
     "pretrained impute is allowed."
+)
+_GATE_ALLOW_SESSION = (
+    "Upload-adapt session is ready for this schema; impute uses the "
+    "session checkpoint/scaler under artifacts/m7/ (not Beijing M2 claim "
+    "weights). File-local adapt only — not a cross-dataset SOTA claim."
 )
 
 
@@ -398,12 +403,14 @@ def evaluate_impute_gate(
         mapped_features: tuple[str, ...],
         checkpoint_features: tuple[str, ...],
         ingest_mode: str,
+        session_features: tuple[str, ...] | None = None,
 ) -> ImputeGateResult:
-    """Decide whether pretrained impute may run for this ingest.
+    """Decide whether impute may run for this ingest.
 
     Exact Beijing mode is allowed (upload already validated against the
-    Exact schema). Flexible mode is allowed only when mapped features
-    exactly match the loaded checkpoint/scaler names and count.
+    Exact schema). Flexible mode is allowed when mapped features exactly
+    match the loaded checkpoint/scaler names and count, or when an M7
+    adapt session is bound with matching ``session_features``.
 
     Parameters
     ----------
@@ -413,6 +420,9 @@ def evaluate_impute_gate(
         Names tied to the loaded M2 checkpoint / scaler.
     ingest_mode : str
         ``exact_beijing`` or ``flexible``.
+    session_features : tuple of str or None, optional
+        Feature names from a successful adapt session for this upload.
+        When equal to ``mapped_features``, unlock session impute.
 
     Returns
     -------
@@ -432,6 +442,14 @@ def evaluate_impute_gate(
         return ImputeGateResult(
             allowed=True,
             reason=_GATE_ALLOW_FLEXIBLE_MATCH,
+        )
+    if (
+            session_features is not None
+            and features_match_checkpoint(mapped_features, session_features)
+    ):
+        return ImputeGateResult(
+            allowed=True,
+            reason=_GATE_ALLOW_SESSION,
         )
     return ImputeGateResult(allowed=False, reason=_GATE_BLOCK_MESSAGE)
 

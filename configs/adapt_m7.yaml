@@ -1,0 +1,75 @@
+# Milestone 7 upload-adapt contract.
+# Caps lock ASSUMPTIONS.md (Milestone 7). Wired to CLI + Streamlit adapt panel.
+# Exact Beijing pretrained demo remains configs/app_m4.yaml + M2 claim artifacts.
+#
+# Tensor contract (unchanged): x, m shaped (B, T, F);
+# m: 1=observed, 0=missing; missing x cells use sentinel 0.0.
+# Never infer missingness from nonzero x.
+#
+# Paths after M7:
+#   exact_beijing pretrained — load M2 weights (no adapt)
+#   upload_adapt — M6 ingest → capped adapt → session ckpt/scaler → impute
+#
+# CLI:
+#   python scripts/adapt_upload_m7.py \
+#     --csv tests/fixtures/toy_non_beijing.csv \
+#     --config configs/adapt_m7.yaml
+#
+# Artifacts (adapt.artifact_dir / <run_id>/):
+#   best_score_net.eqx
+#   feature_scaler.npz
+#   adapt_meta.json
+# Never default-write into artifacts/m2/checkpoints/.
+
+adapt:
+  # scratch | fine_tune (fine_tune refused when F != base F)
+  default_mode: scratch
+  allow_fine_tune_when_f_matches: true
+  # Require name equality unless user confirms same semantics (product later).
+  require_feature_name_match_for_fine_tune: true
+  base_checkpoint: artifacts/m2/checkpoints/best_score_net.eqx
+  base_scaler: artifacts/m2/checkpoints/feature_scaler.npz
+  artifact_dir: artifacts/m7
+  timeout_seconds: 600
+  min_windows: 2
+  train_fraction: 0.80
+  # Smoke artificial gaps applied AFTER train-only scaler fit.
+  smoke_mcar_rate: 0.30
+
+window:
+  seq_len: 64
+  # Preview / adapt latency; align with M6 ingest defaults when practical.
+  max_windows: 4
+
+# Train knobs: smoke caps (not full M2). Naming aligned with configs/real_m2.yaml.
+train:
+  lr: 0.0003
+  epochs: 5
+  steps_per_epoch: 20
+  batch_size: 4
+  weight_decay: 0.0001
+  seed: 0
+  t_eps: 1.0e-5
+  obs_loss_weight: 0.0
+  grad_clip_norm: 1.0
+  # random | block | mixed — smoke default; mixed allowed later if cheap.
+  mask_mode: random
+
+sde:
+  beta_min: 0.1
+  beta_max: 20.0
+  T_diff: 1.0
+
+sample:
+  K_samples: 8
+  solver_steps: 50
+
+seeds:
+  mask: 0
+  sample: 1
+
+data:
+  fixture_csv: tests/fixtures/toy_non_beijing.csv
+
+# Claim discipline: adapt smoke metrics stay under artifacts/m7/<run_id>/.
+# Do not merge into artifacts/m3/ or rewrite docs/EVAL.md Beijing tables.

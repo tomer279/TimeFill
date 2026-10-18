@@ -22,6 +22,8 @@ plot_impute
     Plotly chart builders for gaps and mean ± bands.
 demo_eval_smoke
     Tiny in-app MCAR smoke metrics (not the M3 report).
+adapt_upload_m7
+    M7 CLI pipeline: Flexible ingest → adapt → impute → CSV export.
 streamlit_app
     Streamlit entrypoint: Exact Beijing impute + Flexible preview / gate.
 """

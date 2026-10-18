@@ -21,9 +21,11 @@ path — UCI Beijing air-quality (`F=6`), pretrained M2 checkpoint, Streamlit
 demo with **exact schema** (no silent remaps), and honest LOCF / linear
 evidence. **Post-v1 M6** adds schema-flexible **ingest / preview** for
 non-Beijing CSVs; that is **not** a universal imputer — Flexible-schema
-**impute** still needs a compatible checkpoint/scaler or **M7**.
-Train-on-upload, gap-size routing, and evidence expansion remain later
-post-v1 (see Future work).
+**impute** needs a matching checkpoint/scaler **or** a successful **M7**
+file-local adapt on that upload. **Post-v1 M7** ships smoke-capped
+train-on-upload / adapt → session impute → download; **one-file adapt is
+not a proven universal imputer**. Gap-regime routing (**M8**) and evidence
+expansion (**M9**) remain later (see Future work).
 
 ## Method (short)
 
@@ -61,6 +63,10 @@ a PhysioNet run** (Beijing air-quality path; see `docs/EVAL.md`).
 - **Flexible ingest (M6)** — non-Beijing CSV → validate / window / schema +
   missingness **preview**; pretrained impute stays Exact Beijing (or a
   matching checkpoint). Walkthrough: `docs/milestone_6_walkthrough.md`
+- **Upload-adapt (M7)** — smoke-capped scratch / fine-tune-when-compatible on
+  the uploaded file → session checkpoint + scaler → impute → download.
+  File-local only (not a new Beijing/M3 claim). Walkthrough:
+  `docs/milestone_7_walkthrough.md`
 
 Milestone walkthroughs and contracts are linked in **Docs appendix**.
 
@@ -130,7 +136,10 @@ original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
 - **Flexible ingest ≠ universal impute:** M6 accepts messy non-Beijing
   schemas for preview (and clear rejects). The M2 Beijing checkpoint does
   **not** impute arbitrary CSVs; use Exact names, a matching checkpoint, or
-  M7 train-on-upload.
+  **M7** file-local adapt (smoke-capped; not cross-dataset SOTA).
+- **One-file adapt ≠ universal product:** M7 session metrics are smoke on
+  **that** upload; do not merge into `artifacts/m3/` or treat as Beijing
+  claim-table evidence.
 - **Point-baseline CRPS / coverage are degenerate `K=1`:** CRPS ≈ absolute
   error; interval width 0 — not calibrated probabilistic scores.
 
@@ -138,7 +147,10 @@ original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
 
 Local M2 checkpoint + scaler required (no hosted weights for v1). Latency
 defaults are locked in `configs/app_m4.yaml` (`K_samples=8`,
-`solver_steps=20`, `smoke.max_windows=4`). Fine-tune-in-UI is not shipped.
+`solver_steps=20`, `smoke.max_windows=4`). Exact Beijing happy path stays
+**pretrained-only** (no adapt required). Optional **M7 Run adapt** trains a
+smoke-capped **session** model for the current upload (never overwrites
+M2 claim weights).
 
 Fetch Beijing CSVs first (see How to run (M2)), then:
 
@@ -452,7 +464,7 @@ Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
 
 ## Docs appendix
 
-- [`ASSUMPTIONS.md`](ASSUMPTIONS.md) — M1–M6 contracts
+- [`ASSUMPTIONS.md`](ASSUMPTIONS.md) — M1–M7 contracts
 - [`docs/EVAL.md`](docs/EVAL.md) — eval / mask / split protocol
 - [`docs/milestone_1_walkthorugh.md`](docs/milestone_1_walkthorugh.md)
 - [`docs/milestone_2_walkthrough.md`](docs/milestone_2_walkthrough.md)
@@ -460,31 +472,38 @@ Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
 - [`docs/milestone_4_walkthrough.md`](docs/milestone_4_walkthrough.md)
 - [`docs/milestone_5_walkthrough.md`](docs/milestone_5_walkthrough.md)
 - [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md)
+- [`docs/milestone_7_walkthrough.md`](docs/milestone_7_walkthrough.md)
 
 ## Future work
 
 Roadmap toward the **product north star** above. Scheduled milestones and
 exit criteria live in [`plan.md`](plan.md) (**Post-v1 milestones (M6–M9)**).
-M6 detail: [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md).
+M6: [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md).
+M7: [`docs/milestone_7_walkthrough.md`](docs/milestone_7_walkthrough.md).
 
 **Shipped (post-v1):** **M6 — Schema-flexible ingest** — infer / map columns,
 native masks, pad / window / reject thresholds, Streamlit + CLI schema /
 missingness **preview before impute**. Schema-flexible ingest is **not** a
 universal imputer: Flexible-schema **impute** still needs a **compatible
-checkpoint / scaler** or **M7** train-on-upload. v1 Beijing M3 claim tables
-are unchanged (`docs/EVAL.md`).
+checkpoint / scaler** or **M7** train-on-upload. **Also shipped: M7 —
+Train-on-upload / adapt** — smoke-capped scratch (or fine-tune when `F`
+matches) → session impute → download on the uploaded file. **One-file adapt
+≠ proven universal imputer**; smoke metrics stay file-local and must not
+merge into `artifacts/m3/`. v1 Beijing M3 claim tables are unchanged
+(`docs/EVAL.md`).
 
-**Next scheduled:** **M7 — Train-on-upload / adapt** → **M8 — Gap-regime
-routing** → **M9 — Evidence expansion** (hosted checkpoint, second domain,
-or stronger baseline — one primary track).
+**Next scheduled:** **M8 — Gap-regime routing** → **M9 — Evidence
+expansion** (hosted checkpoint, second domain, or stronger baseline — one
+primary track).
 
 - **M6 Schema-flexible ingest (shipped):** column mapping, timestamps,
   pad/truncate, clear rejects for too short / sparse / invalid schema;
   Exact Beijing remains the pretrained fallback. See
   [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md).
-- **M7 Train-on-upload:** train or fine-tune on the user’s CSV, then impute
-  and download. Pretrained impute stays Exact Beijing (or a matching
-  checkpoint) until M7.
+- **M7 Train-on-upload / adapt (shipped):** CLI
+  `scripts/adapt_upload_m7.py` and Streamlit **Run adapt**; session
+  artifacts under `artifacts/m7/`; Exact Beijing pretrained path intact.
+  Caps / honesty: `ASSUMPTIONS.md` Milestone 7 + `configs/adapt_m7.yaml`.
 - **M8 Gap-regime routing:** detect gap length → light / point methods for
   short holes, full TimeFill (or specialist) for medium / large blocks.
 - **M9 Evidence expansion:** hosted M2 checkpoint, second-domain evidence

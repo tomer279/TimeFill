@@ -28,6 +28,8 @@ from src.train.loss import (
     DSMLossSettings,
     _DsmKeyPack,
     _OBSERVED_INPUT_CLEAN,
+    _PARAM_EPS,
+    _STD_FLOOR,
     _weighted_mean_square,
 )
 
@@ -165,7 +167,10 @@ class RealConditionalDSMLoss:
         if self.settings.observed_input == _OBSERVED_INPUT_CLEAN:
             y_t = m_train * x_obs + (1.0 - m_train) * y_t
         pred = model(y_t, time, m_train, x_obs)
-        target = self._score_target(eps, batch.x0, time)
+        if self.settings.parameterization == _PARAM_EPS:
+            target = eps
+        else:
+            target = self._score_target(eps, batch.x0, time)
         weights = self.reduction_weights(batch.m_native, m_art, m_train)
         return _weighted_mean_square(pred, target, weights)
 
@@ -262,8 +267,8 @@ class RealConditionalDSMLoss:
             t_eps=self.settings.t_eps,
             obs_loss_weight=self.settings.obs_loss_weight,
             mask_mode=self.settings.mask_mode,
-            std_floor=self.settings.std_floor,
             observed_input=self.settings.observed_input,
+            parameterization=self.settings.parameterization,
         )
         return RealConditionalDSMLoss(self.sde, settings)
 
@@ -290,7 +295,7 @@ class RealConditionalDSMLoss:
             Target score, same shape as ``eps``.
         """
         _, std = self.sde.marginal_prob(x0, time)
-        std_safe = jnp.maximum(std, self.settings.std_floor)
+        std_safe = jnp.maximum(std, _STD_FLOOR)
         return -eps / std_safe
 
     def _sample_time(
@@ -337,6 +342,7 @@ def dsm_settings_from_real_config(config: RealM2Config) -> DSMLossSettings:
         obs_loss_weight=config.train.protocol.obs_loss_weight,
         mask_mode=config.train.protocol.mask_mode,
         observed_input=config.train.protocol.observed_input,
+        parameterization=config.train.protocol.parameterization,
     )
     settings.validate()
     return settings

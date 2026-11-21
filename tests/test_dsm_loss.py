@@ -17,6 +17,7 @@ from src.sde.vp_sde import VPSDE
 from src.train.loss import (
     ConditionalDSMLoss,
     DSMLossSettings,
+    _STD_FLOOR,
     dsm_settings_from_config,
 )
 from src.train.artifacts import ArtifactPaths, stub_val_imputation_hook
@@ -110,7 +111,7 @@ def test_score_target_matches_formula(
     eps = jnp.ones_like(clean_x0)
     target = dsm_loss.score_target(eps, clean_x0, time)
     _, std = dsm_loss.sde.marginal_prob(clean_x0, time)
-    std_safe = jnp.maximum(std, dsm_loss.settings.std_floor)
+    std_safe = jnp.maximum(std, _STD_FLOOR)
     expected = -eps / std_safe
     assert target.shape == clean_x0.shape
     assert bool(jnp.allclose(target, expected, rtol=1e-5, atol=1e-5))

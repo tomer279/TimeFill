@@ -40,6 +40,10 @@ _DEFAULT_OBSERVED_INPUT = _OBSERVED_INPUT_NOISED
 _ALLOWED_OBSERVED_INPUT = frozenset(
     {_OBSERVED_INPUT_NOISED, _OBSERVED_INPUT_CLEAN}
 )
+_PARAM_SCORE = "score"
+_PARAM_EPS = "eps"
+_DEFAULT_PARAMETERIZATION = _PARAM_SCORE
+_ALLOWED_PARAMETERIZATIONS = frozenset({_PARAM_SCORE, _PARAM_EPS})
 
 
 @dataclass(frozen=True)
@@ -118,10 +122,10 @@ class DSMLossSettings:
         Weight on observed cells; M1 default is ``0.0`` (zero aux loss).
     mask_mode : str
         ``random``, ``block``, or ``mixed``.
-    std_floor : float
-        Floor for ``std(t)`` when forming the score target.
     observed_input : str
         ``noised`` (legacy) or ``clean`` (match frozen sampler).
+    parameterization : str
+        ``score`` (legacy target ``-eps/std``) or ``eps`` (noise target).
     """
 
     mask_rate: float
@@ -129,8 +133,8 @@ class DSMLossSettings:
     t_eps: float
     obs_loss_weight: float
     mask_mode: str
-    std_floor: float = _STD_FLOOR
     observed_input: str = _DEFAULT_OBSERVED_INPUT
+    parameterization: str = _DEFAULT_PARAMETERIZATION
 
     def validate(self) -> None:
         """Raise ``ValueError`` if DSM settings are invalid."""
@@ -155,15 +159,17 @@ class DSMLossSettings:
             _MASK_MODE_MIXED,
         ):
             raise ValueError(f"unsupported mask_mode={self.mask_mode!r}")
-        if self.std_floor <= 0.0:
-            raise ValueError(
-                f"std_floor must be positive, got {self.std_floor}"
-            )
         if self.observed_input not in _ALLOWED_OBSERVED_INPUT:
             raise ValueError(
                 "observed_input must be one of "
                 f"{sorted(_ALLOWED_OBSERVED_INPUT)}, "
                 f"got {self.observed_input!r}"
+            )
+        if self.parameterization not in _ALLOWED_PARAMETERIZATIONS:
+            raise ValueError(
+                "parameterization must be one of "
+                f"{sorted(_ALLOWED_PARAMETERIZATIONS)}, "
+                f"got {self.parameterization!r}"
             )
         if (
             self.observed_input == _OBSERVED_INPUT_CLEAN
@@ -188,8 +194,8 @@ class DSMLossSettings:
             "t_eps": self.t_eps,
             "obs_loss_weight": self.obs_loss_weight,
             "mask_mode": self.mask_mode,
-            "std_floor": self.std_floor,
             "observed_input": self.observed_input,
+            "parameterization": self.parameterization,
         }
 
 
@@ -202,8 +208,8 @@ class ConditionalDSMLoss:
     2. Sample self-supervised mask ``m`` (random / block / mixed).
     3. Sample ``t ~ Uniform(t_eps, T_diff)`` per example.
     4. Perturb ``y_t = mean(x0, t) + std(t) * eps``.
-    5. Predict ``s_theta(y_t, t, m, x_obs)``.
-    6. Target score ``-eps / std(t)`` (floored).
+    5. Predict ``s_theta(y_t, t, m, x_obs)`` (score or ``eps`` by flag).
+    6. Target ``-eps / std(t)`` (``score``) or ``eps`` (``eps`` mode).
     7. Reduce squared error with weights: target cells ``(1 - m)`` get
        weight ``1``; observed cells get ``obs_loss_weight`` (M1: ``0``).
 
@@ -265,7 +271,7 @@ class ConditionalDSMLoss:
         Returns
         -------
         jax.Array
-            Scalar mean weighted squared score error.
+            Scalar mean weighted squared prediction error.
         """
         keys = _DsmKeyPack.split_from(key)
         x_obs, mask = self.sample_mask(keys.mask, x0)
@@ -278,7 +284,10 @@ class ConditionalDSMLoss:
         if self.settings.observed_input == _OBSERVED_INPUT_CLEAN:
             y_t = mask * x_obs + (1.0 - mask) * y_t
         pred = model(y_t, time, mask, x_obs)
-        target = self.score_target(eps, x0, time)
+        if self.settings.parameterization == _PARAM_EPS:
+            target = eps
+        else:
+            target = self.score_target(eps, x0, time)
         weights = self.reduction_weights(mask)
         return _weighted_mean_square(pred, target, weights)
 
@@ -372,7 +381,7 @@ class ConditionalDSMLoss:
             Target score, same shape as ``eps``.
         """
         _, std = self.sde.marginal_prob(x0, time)
-        std_safe = jnp.maximum(std, self.settings.std_floor)
+        std_safe = jnp.maximum(std, _STD_FLOOR)
         return -eps / std_safe
 
     def _sample_time(
@@ -419,6 +428,7 @@ def dsm_settings_from_config(config: ToyM1Config) -> DSMLossSettings:
         obs_loss_weight=config.train.protocol.obs_loss_weight,
         mask_mode=config.train.protocol.mask_mode,
         observed_input=config.train.protocol.observed_input,
+        parameterization=config.train.protocol.parameterization,
     )
     settings.validate()
     return settings

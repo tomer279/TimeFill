@@ -10,6 +10,12 @@ TrainOptimizerConfig
     Learning rate, weight decay, and grad clipping.
 TrainScheduleConfig
     Epoch / step / logging schedule knobs.
+TrainProtocolLossExtras
+    M7.5 loss / schedule / selection flags.
+TrainProtocolMaskExtras
+    M7.5 artificial-mask protocol flags.
+TrainProtocolExtras
+    Bundles loss + mask extras under ``TrainProtocolConfig``.
 TrainProtocolConfig
     Seed, DSM protocol, mask mode, and artifact root.
 TrainConfig
@@ -30,11 +36,12 @@ load_toy_m1
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import yaml
 
-from src.data.schema import TimeSeriesBatch, build_stub_batch
+if TYPE_CHECKING:
+    from src.data.schema import TimeSeriesBatch
 
 _REQUIRED_ROOT_KEYS = ("data", "sde", "train", "sample")
 _REQUIRED_DATA_KEYS = (
@@ -58,6 +65,28 @@ _DEFAULT_MASK_MODE = "mixed"
 _DEFAULT_ARTIFACT_DIR = "artifacts/m1"
 _ALLOWED_MASK_MODES = frozenset({"random", "block", "mixed"})
 _REQUIRED_SAMPLE_KEYS = ("K_samples", "solver_steps")
+_DEFAULT_PARAMETERIZATION = "score"
+_DEFAULT_OBSERVED_INPUT = "noised"
+_DEFAULT_MIXED_SELECT = "per_batch"
+_DEFAULT_MAX_BLOCKS_PER_FEATURE = 1
+_DEFAULT_LR_SCHEDULE = "constant"
+_DEFAULT_WARMUP_STEPS = 0
+_DEFAULT_SELECT_BY = "val_dsm_loss"
+_DEFAULT_OBSERVED_MODE = "frozen_clean"
+_DEFAULT_DIFFUSION_IMPL = "dense"
+_DEFAULT_POINT_ESTIMATE = "mean"
+_ALLOWED_PARAMETERIZATIONS = frozenset({"score", "eps"})
+_ALLOWED_OBSERVED_INPUT = frozenset({"noised", "clean"})
+_ALLOWED_MIXED_SELECT = frozenset({"per_batch", "per_window"})
+_ALLOWED_LR_SCHEDULE = frozenset({"constant", "warmup_cosine"})
+_ALLOWED_SELECT_BY = frozenset({
+    "val_dsm_loss",
+    "val_impute_crps",
+    "val_impute_mae",
+})
+_ALLOWED_OBSERVED_MODE = frozenset({"frozen_clean", "replace_noised"})
+_ALLOWED_DIFFUSION_IMPL = frozenset({"dense", "diagonal"})
+_ALLOWED_POINT_ESTIMATE = frozenset({"mean", "median"})
 
 
 class DataConfig:
@@ -330,6 +359,177 @@ class TrainScheduleConfig:
             )
 
 
+class TrainProtocolLossExtras:
+    """M7.5 loss / schedule / selection flags.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields for a flat YAML ``train`` section.
+    validate
+        Check allowlists and ranges.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Parse loss-related M7.5 keys with legacy defaults."""
+        self.parameterization = str(
+            mapping.get("parameterization", _DEFAULT_PARAMETERIZATION)
+        ).lower()
+        self.observed_input = str(
+            mapping.get("observed_input", _DEFAULT_OBSERVED_INPUT)
+        ).lower()
+        self.ema_decay = _optional_float(mapping.get("ema_decay", None))
+        self.lr_schedule = str(
+            mapping.get("lr_schedule", _DEFAULT_LR_SCHEDULE)
+        ).lower()
+        self.warmup_steps = int(
+            mapping.get("warmup_steps", _DEFAULT_WARMUP_STEPS)
+        )
+        self.select_by = str(
+            mapping.get("select_by", _DEFAULT_SELECT_BY)
+        ).lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON/YAML-serializable loss-extra fields."""
+        return {
+            "parameterization": self.parameterization,
+            "observed_input": self.observed_input,
+            "ema_decay": self.ema_decay,
+            "lr_schedule": self.lr_schedule,
+            "warmup_steps": self.warmup_steps,
+            "select_by": self.select_by,
+        }
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if loss-extra knobs are invalid."""
+        if self.parameterization not in _ALLOWED_PARAMETERIZATIONS:
+            raise ValueError(
+                "parameterization must be one of "
+                f"{sorted(_ALLOWED_PARAMETERIZATIONS)}, "
+                f"got {self.parameterization!r}"
+            )
+        if self.observed_input not in _ALLOWED_OBSERVED_INPUT:
+            raise ValueError(
+                "observed_input must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_INPUT)}, "
+                f"got {self.observed_input!r}"
+            )
+        if self.ema_decay is not None and not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError(
+                "ema_decay must be in [0, 1), "
+                f"got {self.ema_decay}"
+            )
+        if self.lr_schedule not in _ALLOWED_LR_SCHEDULE:
+            raise ValueError(
+                "lr_schedule must be one of "
+                f"{sorted(_ALLOWED_LR_SCHEDULE)}, "
+                f"got {self.lr_schedule!r}"
+            )
+        if self.warmup_steps < 0:
+            raise ValueError(
+                f"warmup_steps must be >= 0, got {self.warmup_steps}"
+            )
+        if self.select_by not in _ALLOWED_SELECT_BY:
+            raise ValueError(
+                "select_by must be one of "
+                f"{sorted(_ALLOWED_SELECT_BY)}, got {self.select_by!r}"
+            )
+
+
+class TrainProtocolMaskExtras:
+    """M7.5 artificial-mask protocol flags.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields for a flat YAML ``train`` section.
+    validate
+        Check allowlists and ranges.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Parse mask-related M7.5 keys with legacy defaults."""
+        self.mixed_select = str(
+            mapping.get("mixed_select", _DEFAULT_MIXED_SELECT)
+        ).lower()
+        self.block_len_range = _optional_int_pair(
+            mapping.get("block_len_range", None)
+        )
+        self.max_blocks_per_feature = int(
+            mapping.get(
+                "max_blocks_per_feature",
+                _DEFAULT_MAX_BLOCKS_PER_FEATURE,
+            )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON/YAML-serializable mask-extra fields."""
+        return {
+            "mixed_select": self.mixed_select,
+            "block_len_range": (
+                None if self.block_len_range is None
+                else list(self.block_len_range)
+            ),
+            "max_blocks_per_feature": self.max_blocks_per_feature,
+        }
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if mask-extra knobs are invalid."""
+        if self.mixed_select not in _ALLOWED_MIXED_SELECT:
+            raise ValueError(
+                "mixed_select must be one of "
+                f"{sorted(_ALLOWED_MIXED_SELECT)}, "
+                f"got {self.mixed_select!r}"
+            )
+        if self.block_len_range is not None:
+            lo_bound, hi_bound = self.block_len_range
+            if lo_bound <= 0 or hi_bound < lo_bound:
+                raise ValueError(
+                    "block_len_range must satisfy 0 < lo <= hi, "
+                    f"got {self.block_len_range!r}"
+                )
+        if self.max_blocks_per_feature <= 0:
+            raise ValueError(
+                "max_blocks_per_feature must be positive, "
+                f"got {self.max_blocks_per_feature}"
+            )
+
+
+class TrainProtocolExtras:
+    """Milestone 7.5 protocol flags nested under ``TrainProtocolConfig``.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields for a flat YAML ``train`` section.
+    validate
+        Validate nested loss and mask extras.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Parse M7.5 protocol keys with legacy defaults.
+
+        Parameters
+        ----------
+        mapping : Mapping[str, Any]
+            Flat YAML ``train`` mapping.
+        """
+        self.loss = TrainProtocolLossExtras(mapping)
+        self.mask = TrainProtocolMaskExtras(mapping)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of M7.5 protocol fields."""
+        merged: dict[str, Any] = {}
+        merged.update(self.loss.to_dict())
+        merged.update(self.mask.to_dict())
+        return merged
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if M7.5 protocol knobs are invalid."""
+        self.loss.validate()
+        self.mask.validate()
+
+
 class TrainProtocolConfig:
     """DSM protocol and artifact knobs inside the flat YAML ``train`` section.
 
@@ -352,6 +552,8 @@ class TrainProtocolConfig:
         ``random``, ``block``, or ``mixed`` self-supervised masks.
     artifact_dir : str
         Root directory for checkpoints and loss curves.
+    extras : TrainProtocolExtras
+        Milestone 7.5 flags (also exposed via properties below).
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -373,6 +575,52 @@ class TrainProtocolConfig:
         self.artifact_dir = str(
             mapping.get("artifact_dir", _DEFAULT_ARTIFACT_DIR)
         )
+        self.extras = TrainProtocolExtras(mapping)
+
+    @property
+    def parameterization(self) -> str:
+        """Forward ``extras.loss.parameterization`` for call-site parity."""
+        return self.extras.loss.parameterization
+
+    @property
+    def observed_input(self) -> str:
+        """Forward ``extras.loss.observed_input`` for call-site parity."""
+        return self.extras.loss.observed_input
+
+    @property
+    def mixed_select(self) -> str:
+        """Forward ``extras.mask.mixed_select`` for call-site parity."""
+        return self.extras.mask.mixed_select
+
+    @property
+    def block_len_range(self) -> tuple[int, int] | None:
+        """Forward ``extras.mask.block_len_range`` for call-site parity."""
+        return self.extras.mask.block_len_range
+
+    @property
+    def max_blocks_per_feature(self) -> int:
+        """Forward ``extras.mask.max_blocks_per_feature`` for call-site parity."""
+        return self.extras.mask.max_blocks_per_feature
+
+    @property
+    def ema_decay(self) -> float | None:
+        """Forward ``extras.loss.ema_decay`` for call-site parity."""
+        return self.extras.loss.ema_decay
+
+    @property
+    def lr_schedule(self) -> str:
+        """Forward ``extras.loss.lr_schedule`` for call-site parity."""
+        return self.extras.loss.lr_schedule
+
+    @property
+    def warmup_steps(self) -> int:
+        """Forward ``extras.loss.warmup_steps`` for call-site parity."""
+        return self.extras.loss.warmup_steps
+
+    @property
+    def select_by(self) -> str:
+        """Forward ``extras.loss.select_by`` for call-site parity."""
+        return self.extras.loss.select_by
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of protocol fields.
@@ -382,13 +630,15 @@ class TrainProtocolConfig:
         dict of str to Any
             Field name to value.
         """
-        return {
+        merged = {
             "seed": self.seed,
             "t_eps": self.t_eps,
             "obs_loss_weight": self.obs_loss_weight,
             "mask_mode": self.mask_mode,
             "artifact_dir": self.artifact_dir,
         }
+        merged.update(self.extras.to_dict())
+        return merged
 
     def validate(self) -> None:
         """Raise `ValueError` if protocol constraints are violated."""
@@ -406,6 +656,7 @@ class TrainProtocolConfig:
             )
         if not self.artifact_dir:
             raise ValueError("artifact_dir must be a non-empty path string")
+        self.extras.validate()
 
 
 class TrainConfig:
@@ -478,6 +729,14 @@ class SampleConfig:
         Number of posterior imputation samples (YAML key ``K_samples``).
     solver_steps : int
         Diffrax / discrete reverse solver steps.
+    t_eps : float or None
+        Sampler endpoint; ``None`` means fall back to ``train.t_eps``.
+    observed_mode : str
+        ``frozen_clean`` (legacy) or ``replace_noised``.
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
+    point_estimate : str
+        ``mean`` (legacy) or ``median`` for MAE reporting.
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -491,6 +750,16 @@ class SampleConfig:
         _require_keys(mapping, _REQUIRED_SAMPLE_KEYS, section="sample")
         self.k_samples = int(mapping["K_samples"])
         self.solver_steps = int(mapping["solver_steps"])
+        self.t_eps = _optional_float(mapping.get("t_eps", None))
+        self.observed_mode = str(
+            mapping.get("observed_mode", _DEFAULT_OBSERVED_MODE)
+        ).lower()
+        self.diffusion_impl = str(
+            mapping.get("diffusion_impl", _DEFAULT_DIFFUSION_IMPL)
+        ).lower()
+        self.point_estimate = str(
+            mapping.get("point_estimate", _DEFAULT_POINT_ESTIMATE)
+        ).lower()
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -503,6 +772,10 @@ class SampleConfig:
         return {
             "K_samples": self.k_samples,
             "solver_steps": self.solver_steps,
+            "t_eps": self.t_eps,
+            "observed_mode": self.observed_mode,
+            "diffusion_impl": self.diffusion_impl,
+            "point_estimate": self.point_estimate,
         }
 
     def validate(self) -> None:
@@ -514,6 +787,26 @@ class SampleConfig:
         if self.solver_steps <= 0:
             raise ValueError(
                 f"solver_steps must be positive, got {self.solver_steps}"
+            )
+        if self.t_eps is not None and self.t_eps <= 0.0:
+            raise ValueError(f"sample t_eps must be positive, got {self.t_eps}")
+        if self.observed_mode not in _ALLOWED_OBSERVED_MODE:
+            raise ValueError(
+                "observed_mode must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_MODE)}, "
+                f"got {self.observed_mode!r}"
+            )
+        if self.diffusion_impl not in _ALLOWED_DIFFUSION_IMPL:
+            raise ValueError(
+                "diffusion_impl must be one of "
+                f"{sorted(_ALLOWED_DIFFUSION_IMPL)}, "
+                f"got {self.diffusion_impl!r}"
+            )
+        if self.point_estimate not in _ALLOWED_POINT_ESTIMATE:
+            raise ValueError(
+                "point_estimate must be one of "
+                f"{sorted(_ALLOWED_POINT_ESTIMATE)}, "
+                f"got {self.point_estimate!r}"
             )
 
 
@@ -616,6 +909,9 @@ def load_toy_m1(path: Path | str) -> tuple[ToyM1Config, TimeSeriesBatch]:
     batch : TimeSeriesBatch
         Stub `(x, m)` batch with shapes `(B, T, F)`.
     """
+    # Lazy import breaks the config ↔ schema cycle that confuses Pylance.
+    from src.data.schema import build_stub_batch
+
     config = load_config(path)
     batch = build_stub_batch(config.data)
     return config, batch
@@ -647,3 +943,21 @@ def _require_keys(
         raise KeyError(
             f"config section '{section}' missing keys: {missing}"
         )
+
+
+def _optional_float(value: Any) -> float | None:
+    """Parse an optional YAML float (``None`` stays ``None``)."""
+    if value is None:
+        return None
+    return float(value)
+
+
+def _optional_int_pair(value: Any) -> tuple[int, int] | None:
+    """Parse an optional ``[lo, hi]`` integer pair from YAML."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(
+            f"block_len_range must be a length-2 list, got {value!r}"
+        )
+    return int(value[0]), int(value[1])

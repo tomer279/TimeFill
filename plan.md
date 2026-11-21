@@ -210,18 +210,24 @@ bands → download; optional gap-regime routing). Each milestone has its own
 DoD; v1 Beijing pretrained claims stay frozen unless a milestone explicitly
 extends the eval contract.
 
-6. **M6 — Schema-flexible ingest**
-7. **M7 — Train-on-upload / adapt**
-8. **M8 — Gap-regime routing**
-9. **M9 — Evidence expansion** (pick one primary track; others optional)
+6. **M6 — Schema-flexible ingest** (done)
+7. **M7 — Train-on-upload / adapt** (done)
+8. **M7.5 — Correctness fixes**, in two tracks — **must land before M8**:
+   - **A, model:** train/sample consistency, loss weighting, score net v2,
+     EMA + selection by imputation, transforms, split pinning, multi-seed
+     re-benchmark
+   - **B, app/data:** session binding, ingest rejects, honest export, a single
+     imputer factory
+9. **M8 — Gap-regime routing** (thresholds from M7.5 evidence)
+10. **M9 — Evidence expansion** (pick one primary track; others optional)
 
-Detail, tasks, and exit criteria: **Post-v1 milestones (M6–M9)** below.
+Detail, tasks, and exit criteria: **Post-v1 milestones (M6–M9, incl. M7.5)** below.
 Stretch items (irregular-time Neural SDE, constrained sampling, privacy)
 remain unscheduled until promoted.
 
 ---
 
-## Post-v1 milestones (M6–M9)
+## Post-v1 milestones (M6–M9, incl. M7.5)
 
 Working plan for the next slices. README **Future work** stays a short
 product-facing summary and points here for DoD.
@@ -267,12 +273,95 @@ product-facing summary and points here for DoD.
 - **Walkthrough:** `docs/milestone_7_walkthrough.md` when work starts.
 - **Depends on:** M6.
 
+### M7.5 — Correctness fixes (pre-M8)
+
+- **Goal:** Fix problems found in two code reviews (Nov 2026) before M8 sets
+  routing thresholds from benchmark numbers and adds routing on top of the
+  upload path. **Track A** covers model training/sampling and the evaluation
+  plumbing behind the re-benchmark; **Track B** covers the app/data path
+  (upload → ingest → adapt → fill → download). This is a correctness /
+  quality milestone: no new product surface, datasets, or baselines. Full
+  spec: **`docs/milestone_7_5_plan.md`**.
+- **Why now:** M3 shows TimeFill behind linear on MAE/RMSE at MCAR 10% / 30%.
+  Part of that gap is likely caused by fixable issues, and M8 would otherwise
+  route around bugs instead of real method limits.
+- **Track A tasks (work packages):**
+  0. **WP0 Contract:** new config keys with **legacy defaults** (old configs
+     reproduce old behavior); `configs/real_m7_5.yaml`,
+     `configs/bench_m7_5.yaml`; `model_config.json` checkpoint sidecar;
+     **split manifest** next to the checkpoint, and the benchmark refuses a
+     re-prepared / mismatched split; ASSUMPTIONS Milestone 7.5 section.
+  1. **WP1 Conditioning consistency:** training currently noises observed
+     cells, while the sampler keeps them clean. Default fix: train with clean
+     observed cells in `y_t` (`observed_input: clean`), matching the frozen
+     sampler. Ablation alternative: noised training + per-step
+     replacement sampling (`observed_mode: replace_noised`).
+  2. **WP2 Loss parameterization:** ε-prediction (`‖ε̂−ε‖²`, score
+     `= −ε̂/σ(t)`), training `t_eps = 1e-3` (separate from the sampler
+     endpoint), `obs_loss_weight = 0`.
+  3. **WP3 Score net v2:** residual blocks with GroupNorm and per-block time
+     conditioning (FiLM), dilations up to 32 (receptive field ≥ T),
+     hidden 64, time embedding scaled (`1000·t`); v1 kept for old checkpoints.
+  4. **WP4 Training hygiene:** EMA weights; checkpoint selection by fixed-set
+     val **imputation** CRPS/MAE (not DSM loss); per-window mixed masks;
+     variable block lengths / multiple blocks; batch 32; warmup + cosine LR.
+  5. **WP5 Transforms & eval:** optional per-feature `log1p` before z-score,
+     nonnegative clip on restore; per-feature and normalized-unit metrics
+     next to pooled original-unit metrics; error (not an identity scaler)
+     for features with no train observations; metrics are NaN when there are
+     no target cells; rewrite the scaler leakage tests so they can fail.
+  6. **WP6 Sampler:** diagonal diffusion (no dense `(T·F)²` matrix); median
+     point estimate for MAE (mean kept for RMSE).
+  7. **WP7 Re-benchmark:** M3 protocols on test × ≥3 mask seeds (mean ± std),
+     block-16 extension row, ablation table, `docs/m7_5_results.md`, and an
+     **M8 hand-off table** (gap regime → best method).
+  8. **WP8 Housekeeping:** remove `src/data/Untitled-1.py`; mark
+     under-trained M7 adapt runs `smoke_only` with a UI warning; optional
+     overlapping-window stitching in the app.
+- **Track B tasks (work packages):**
+  - **WP-B1 Session binding:** content-hash fingerprint for adapt/impute
+    binds; clear the bind on upload change and on failed adapt; bind Fill
+    results to the upload too, so stale charts and downloads never show
+    under a new file (including the pretrained path).
+  - **WP-B2 Ingest correctness:** reject multi-entity files and excess
+    duplicate hours; sort/bin the Exact path by time (or drop the hourly
+    claim); reject non-finite values.
+  - **WP-B3 Honest export:** first make windows carry real length, source
+    row and timestamps; then the download keeps the input's rows (no pad
+    rows), never overwrites native observations (demo mask only for the
+    chart), flags imputed cells, carries timestamp/entity, and is visibly
+    marked partial when the window cap truncates a long upload.
+  - **WP-B4 Adapt guarantees:** hermetic NaN/timeout no-promote test; one
+    imputer factory shared by CLI and Streamlit (parity test).
+  - **WP-B5 Cleanup:** wider NA tokens, exclude calendar/index columns, drop
+    dead adapt knobs, flatten captions, move `pytest` to `dev` extras.
+- **Ground rules:** write only under `artifacts/m7_5/`; v1/M3/M7 artifacts and
+  `docs/EVAL.md` v1 tables stay byte-identical; one WP per PR with tests.
+- **Exit criteria:** All Track A WPs merged behind flags with `pytest` green;
+  the benchmark runs only against a split-pinned checkpoint; one full
+  M7.5 training run with `train_meta.json` (clipped-step fraction, grad norm,
+  selected epoch, EMA, params, receptive field); multi-seed M7.5 benchmark +
+  ablation; honest claim checklist and M8 hand-off table. *Targets (reported
+  either way, not gates):* MAE ≤ linear on MCAR 30% and block 8; CRPS better
+  than M3 TimeFill everywhere; coverage_90 in 0.85–0.95. **Track B:** each
+  must-fix audit repro has a test that fails before and passes after; Fill
+  only runs against a content-matched bind, and charts/downloads only show
+  for the current upload; the download keeps the input's rows and native
+  observations (or is marked partial under the window cap).
+- **Out of scope:** wall-clock / irregular-Δt modelling (stays a documented
+  limitation), CSDI/BRITS baselines (M9), routing (M8), multi-user / hosted
+  security hardening (load model stays one person on a laptop).
+- **Walkthrough:** `docs/milestone_7_5_walkthrough.md` when work starts.
+- **Depends on:** M2, M3, M7 (shared adapt path picks up the new flags opt-in).
+
 ### M8 — Gap-regime routing
 
 - **Goal:** Detect contiguous gap length and choose a policy — light / point
   methods for short holes; full TimeFill (or a specialist) for medium / large
-  blocks — matching M3 evidence that linear is strong on easy short MCAR while
-  TimeFill wins on blocks and probabilistic scores.
+  blocks — matching the evidence (M3, re-measured in M7.5) that linear is
+  strong on easy short MCAR while TimeFill wins on blocks and probabilistic
+  scores. If M7.5 closes the short-gap MAE gap, routing may reduce to a
+  latency / cost policy; document whichever is true.
 - **Tasks:**
   1. Define small / medium / large thresholds (config-driven; document defaults).
   2. Implement a router that assigns each gap (or window) a backend policy.
@@ -284,7 +373,9 @@ product-facing summary and points here for DoD.
 - **Exit criteria:** Documented routing contract + table or notes showing when
   routing helps or hurts; runnable script or app path that applies the router.
 - **Walkthrough:** `docs/milestone_8_walkthrough.md` when work starts.
-- **Depends on:** M3 evidence contract; product wiring can use M4/M7 paths.
+- **Depends on:** **M7.5** (thresholds and "who wins where" come from the M7.5
+  multi-seed hand-off table, not the single-seed M3 table); M3 protocol
+  contract; product wiring can use M4/M7 paths.
 
 ### M9 — Evidence expansion
 
@@ -325,13 +416,19 @@ product-facing summary and points here for DoD.
 | Risk | Mitigation |
 |------|------------|
 | Flat MLP ignores temporal structure | Use temporal score architecture from Phase 1 |
-| Irregular time is hard | Start with windowed regular grids + masks; add time encodings next |
+| Irregular time is hard | Start with windowed regular grids + masks; add time encodings next (still deferred after M7.5: timestamps are validated but unused by the model) |
 | Sampling too slow for Streamlit | Pretrained checkpoints; fewer steps / smaller `K` in the UI |
 | Overclaiming vs CSDI | Position as continuous-time / irregular-time JAX implementation with uncertainty UX, not “first ever imputer” |
 | Metric gaming | Pre-register protocols in Phase 0; report failures |
 | Project collapses into “CSDI in JAX” | Keep SDE+Diffrax primary; ship irregular-time or label it deferred; benchmark vs CSDI in M3 |
 | Universal path overclaims v1 Beijing results | Keep M6–M9 claims scoped; do not silently remap schemas or merge eval tables |
 | Train-on-upload too slow / unstable on CPU | Smoke caps, fine-tune-from-base, clear timeouts; hosted checkpoint (M9) for pretrained demo |
+| Train/sample conditioning mismatch or high-variance DSM loss degrades imputations | M7.5 WP1–WP2: consistent observed-cell handling, ε-prediction, `t_eps=1e-3` |
+| Noisy checkpoint selection picks a lucky epoch | M7.5 WP4: EMA + selection by fixed-set val imputation metrics |
+| Single-seed benchmark overstates small MAE gaps | M7.5 WP7: ≥3 mask seeds, mean ± std |
+| App returns fills for the wrong upload, or the download mixes invented / overwritten cells | M7.5 Track B: content-hash binds, clear on failure, native-preserving export without pad rows |
+| Re-preparing data silently leaks train windows into "test" | M7.5 WP0: split manifest next to the checkpoint; benchmark refuses a mismatch |
+| M7.5 refactor silently changes v1 numbers | Legacy-default flags, checkpoint sidecar + fallback, frozen-artifact rule |
 
 ---
 

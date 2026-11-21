@@ -27,6 +27,7 @@ compose_protocol_masks
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,8 +40,10 @@ from src.data.real.masks import MaskComposer, artificial_target_mask
 from src.data.schema import BATCH_AXIS
 from src.eval.m2_val_impute import metric_observation_mask
 from src.eval.m3_table import ProtocolKey
+from src.eval.split_pin import read_split_manifest, verify_split_manifest
 
 _MCAR_BLOCK_STUB = 1
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,11 +65,14 @@ class SplitWindowBundle:
         Native masks ``(B, T, F)``.
     split_name : str
         Split label (``test`` / ``val`` / ``train``).
+    split_pinned : bool
+        ``True`` when a matching ``split_manifest.json`` was verified.
     """
 
     values_n: jnp.ndarray
     m_native: jnp.ndarray
     split_name: str
+    split_pinned: bool = False
 
     def n_windows(self) -> int:
         """Return batch size ``B``."""
@@ -96,6 +102,7 @@ class SplitWindowBundle:
             values_n=self.values_n[:limit],
             m_native=self.m_native[:limit],
             split_name=self.split_name,
+            split_pinned=self.split_pinned,
         )
 
 
@@ -157,12 +164,15 @@ class SplitLoadRequest:
         ``test`` / ``val`` / ``train``.
     max_windows : int or None
         Optional leading-window cap for smoke.
+    checkpoint_dir : pathlib.Path or None
+        Optional dir with ``split_manifest.json`` for A5 pin checks.
     """
 
     processed_dir: Path
     scaler: FeatureScaler
     split_name: str
     max_windows: int | None
+    checkpoint_dir: Path | None = None
 
     def resolve_processed(self) -> Path:
         """Return the processed directory path."""
@@ -332,6 +342,10 @@ def load_split_window_bundle(request: SplitLoadRequest) -> SplitWindowBundle:
     """
     if not request.scaler.is_fitted():
         raise RuntimeError("scaler must be loaded before normalizing split")
+    split_pinned = _apply_split_pin(
+        request.checkpoint_dir,
+        request.processed_dir,
+    )
     dataset, split = load_processed_dataset(request.processed_dir)
     index = _split_indices(split, request.split_name)
     if index.size == 0:
@@ -347,8 +361,33 @@ def load_split_window_bundle(request: SplitLoadRequest) -> SplitWindowBundle:
         values_n=jnp.asarray(values_n[index], dtype=jnp.float32),
         m_native=jnp.asarray(masks[index], dtype=jnp.float32),
         split_name=request.split_name,
+        split_pinned=split_pinned,
     )
     return bundle.truncate(request.max_windows)
+
+
+def _apply_split_pin(
+        checkpoint_dir: Path | None,
+        processed_dir: Path,
+) -> bool:
+    """Verify a split manifest when ``checkpoint_dir`` is set.
+
+    Returns
+    -------
+    bool
+        ``True`` when a matching manifest was verified; ``False`` when
+        absent (warns) or when no checkpoint dir was provided.
+    """
+    if checkpoint_dir is None:
+        return False
+    manifest = read_split_manifest(checkpoint_dir)
+    if manifest is None:
+        _LOG.warning(
+            "no split manifest beside checkpoint; split_pinned=false"
+        )
+        return False
+    verify_split_manifest(manifest, processed_dir)
+    return True
 
 
 def compose_protocol_masks(

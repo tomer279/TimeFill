@@ -904,3 +904,61 @@ Beijing claim table).
 - Full multi-hour UI train (smoke caps + timeout are the product default)
 - Rewriting M1–M6 tensor / mask / sentinel contracts
 - Silently changing Beijing `docs/EVAL.md` claim protocols
+
+---
+
+# Milestone 7.5 Assumptions (model-correctness scaffolding)
+
+M7.5 adds config flags and pin artifacts. **Legacy configs keep legacy
+defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
+`configs/bench_m7_5.yaml`. Tensor / mask / sentinel contracts are unchanged.
+
+## Flags (legacy default → M7.5 value)
+
+| Flag | Legacy | M7.5 | Why |
+|---|---|---|---|
+| `train.parameterization` | `score` | `eps` | Stable DSM targets (WP2) |
+| `train.observed_input` | `noised` | `clean` | Match sampler conditioning (WP1) |
+| `train.t_eps` | `1e-5` | `1e-3` | Avoid huge score magnitudes |
+| `train.obs_loss_weight` | `0.1` (real) / `0.0` (toy) | `0.0` | Sampler never uses obs score |
+| `train.mixed_select` | `per_batch` | `per_window` | Richer mask mix (WP4) |
+| `train.block_len_range` | `null` (fixed `block_len`) | `[4, 16]` | Vary block length (WP4) |
+| `train.max_blocks_per_feature` | `1` | `2` | Harder blocks (WP4) |
+| `train.ema_decay` | `null` | `0.999` | Stable selection (WP4) |
+| `train.lr_schedule` | `constant` | `warmup_cosine` | Train hygiene (WP4) |
+| `train.select_by` | `val_dsm_loss` | `val_impute_crps` | Select on imputation (WP4) |
+| `data.batch_size` | `8` | `32` | Throughput (WP4) |
+| `sample.t_eps` | `null` (= train) | `1e-3` | Separate sampler floor (WP2) |
+| `sample.observed_mode` | `frozen_clean` | `frozen_clean` | Pair with clean input |
+| `sample.diffusion_impl` | `dense` | `diagonal` | Cheap reverse SDE (WP6) |
+| `sample.point_estimate` | `mean` | `median` | MAE-aligned (WP6) |
+| `model.arch` | `tcn_v1` | `tcn_v2` | Capacity (WP3) |
+| `data.transform.log1p_features` | `[]` | pollutants except O3 | Skew (WP5) |
+| `data.allow_empty_feature_fallback` | `true` | `false` | No silent identity scaler |
+
+## Split pinning (A5)
+
+- At train time, write `split_manifest.json` beside the checkpoint: mode, seed,
+  fractions, per-split entity lists, `index_sha256` (sorted train/val/test
+  indices), `windows_sha256` (values + masks + entity_ids only).
+- Training clears any existing `best_score_net.eqx` (and optional
+  `model_config.json`) in the artifact checkpoint dir before writing a new
+  manifest, so a pin never outlives its matching checkpoint.
+- Benchmark load with `checkpoint_dir` set: verify hashes against the current
+  `windows.npz`; mismatch raises naming the field.
+- Missing manifest: warn and set `split_pinned=false` (legacy M2 path).
+- Mode/seed/fractions are metadata; pin authority is the two hashes.
+- Benchmark JSON rows include `split_pinned` via `RunMeta` (not a CSV column).
+
+## Checkpoint sidecar
+
+- Optional `model_config.json` next to `best_score_net.eqx`:
+  `ScoreNetConfig.to_dict()` + `parameterization` + `arch_version`.
+- Helper `load_checkpoint_with_config` exists; M3/adapt loaders still use plain
+  `load_checkpoint` until WP3. Missing sidecar falls back to legacy
+  `default_score_net_config`.
+
+## Out of scope for WP0
+
+- Consuming the new flags in loss / sampler / net body (WP1–WP6)
+- Multi-seed bench runner (WP7; `bench_m7_5.yaml` lists seeds for later)

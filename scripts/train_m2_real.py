@@ -16,28 +16,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import jax
-
 from src.data.normalize import resolve_scaler_path
 from src.data.real_config import load_real_m2_config
-from src.models.score_net import (
-    ConditionalScoreNet,
-    default_score_net_config,
-)
-from src.sde.vp_sde import VPSDE
 from src.train.artifacts import resolve_artifact_paths
-from src.train.loop import build_optimizer
 from src.train.real_loop import (
-    M2Trainer,
-    M2TrainerBundle,
     run_m2_training,
-    run_mask_rate_sensitivity,
-)
-from src.train.real_pool import load_normalized_pool
-from src.train.real_val import M2ValHookBundle
-from src.train.real_loss import (
-    RealConditionalDSMLoss,
-    dsm_settings_from_real_config,
+    run_m2_training_from_config,
 )
 
 _DEFAULT_CONFIG = _REPO_ROOT / "configs" / "real_m2.yaml"
@@ -155,7 +139,7 @@ def _needs_override(args: argparse.Namespace) -> bool:
 
 
 def _train_with_overrides(args: argparse.Namespace) -> None:
-    """Load config, apply CLI overrides, and train.
+    """Load config, apply CLI overrides, and train via the shared entry.
 
     Parameters
     ----------
@@ -176,46 +160,7 @@ def _train_with_overrides(args: argparse.Namespace) -> None:
     if args.sensitivity_smoke:
         config.extras.sensitivity_mask_rates = _SENSITIVITY_RATES
     config.validate()
-
-    paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
-    paths.ensure()
-    pool, scaler = load_normalized_pool(config)
-    scaler.save(resolve_scaler_path(paths.checkpoint_dir()))
-    key = jax.random.PRNGKey(config.train.protocol.seed)
-    key_model, key_train = jax.random.split(key)
-    model = ConditionalScoreNet(
-        key_model,
-        default_score_net_config(config.data.n_features),
-    )
-    sde = VPSDE(config.sde)
-    loss_fn = RealConditionalDSMLoss(
-        sde,
-        dsm_settings_from_real_config(config),
-    )
-    val_hook = M2ValHookBundle(
-        sde=sde,
-        t_eps=config.train.protocol.t_eps,
-        k_samples=config.extras.snapshot_k_samples,
-        solver_steps=config.extras.snapshot_solver_steps,
-    ).as_hook()
-    bundle = M2TrainerBundle(
-        config=config,
-        model=model,
-        loss_fn=loss_fn,
-        optimizer=build_optimizer(config.train),
-        paths=paths,
-        pool=pool,
-        val_hook=val_hook,
-    )
-    trainer = M2Trainer(bundle.with_paths())
-    trainer.run(key_train)
-    if config.extras.sensitivity_mask_rates:
-        run_mask_rate_sensitivity(
-            trainer,
-            pool.fixed_val_batch(config.data.batch_size),
-            config.extras.sensitivity_mask_rates,
-            jax.random.PRNGKey(config.train.protocol.seed + 1),
-        )
+    run_m2_training_from_config(config)
 
 
 if __name__ == "__main__":

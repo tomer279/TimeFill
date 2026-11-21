@@ -6,8 +6,12 @@ RealDataPaths
     Raw / processed / scaler path knobs from the ``data`` section.
 RealDataWindow
     Window geometry and feature-list knobs.
+RealDataTransform
+    Optional log1p / clip knobs (parse-only until WP5).
 RealDataBatchMask
     Batch size and artificial-mask knobs.
+RealDataSplit
+    Split mode / seed / fractions and empty-feature fallback.
 RealDataConfig
     Nested ``data`` section facade (flat property accessors).
 RealTrainExtras
@@ -35,6 +39,7 @@ from src.data.config import (
     _require_keys,
 )
 from src.data.real.specs import default_beijing_features
+from src.models.score_net import ScoreNetConfig
 
 _REQUIRED_ROOT_KEYS = ("data", "sde", "train", "sample")
 _REQUIRED_DATA_KEYS = (
@@ -51,7 +56,13 @@ _DEFAULT_STRIDE = 64
 _DEFAULT_SCALER_NAME = "feature_scaler.npz"
 _DEFAULT_SNAPSHOT_K = 4
 _DEFAULT_SNAPSHOT_STEPS = 20
+_DEFAULT_SPLIT_MODE = "entity"
+_DEFAULT_SPLIT_SEED = 0
+_DEFAULT_TRAIN_FRACTION = 0.70
+_DEFAULT_VAL_FRACTION = 0.15
+_DEFAULT_TEST_FRACTION = 0.15
 _ALLOWED_MASK_MODES = frozenset({"random", "block", "mixed"})
+_ALLOWED_SPLIT_MODES = frozenset({"entity", "index"})
 
 
 class RealDataPaths:
@@ -206,6 +217,118 @@ class RealDataWindow:
             )
 
 
+class RealDataTransform:
+    """Optional per-feature transform knobs (parse-only until WP5).
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields to a plain dict.
+    validate
+        No-op placeholder for API parity.
+
+    Instance variables
+    ------------------
+    log1p_features : tuple of str
+        Feature names to ``log1p`` before z-score (legacy empty).
+    clip_nonnegative : bool
+        Clip restored values at 0 (legacy ``False``).
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Initialize from a ``data.transform`` mapping (or empty)."""
+        names = mapping.get("log1p_features", []) or []
+        self.log1p_features = tuple(str(name) for name in names)
+        self.clip_nonnegative = bool(mapping.get("clip_nonnegative", False))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of transform fields."""
+        return {
+            "log1p_features": list(self.log1p_features),
+            "clip_nonnegative": self.clip_nonnegative,
+        }
+
+    def validate(self) -> None:
+        """Validate transform knobs (names may be empty)."""
+        if any(not name for name in self.log1p_features):
+            raise ValueError("log1p_features entries must be non-empty strings")
+
+
+class RealDataSplit:
+    """Train/val/test split knobs and empty-feature fallback.
+
+    Public methods
+    --------------
+    to_dict
+        Serialize fields for a flat YAML ``data`` section.
+    validate
+        Check mode allowlist and fraction sum.
+
+    Instance variables
+    ------------------
+    split_mode : str
+        ``entity`` or ``index``.
+    split_seed : int
+        Split RNG seed.
+    train_fraction : float
+        Train split fraction.
+    val_fraction : float
+        Val split fraction.
+    test_fraction : float
+        Test split fraction.
+    allow_empty_feature_fallback : bool
+        Legacy silent identity scaler when a feature has no train obs.
+    """
+
+    def __init__(self, mapping: Mapping[str, Any]) -> None:
+        """Parse split knobs from a flat ``data`` mapping."""
+        self.split_mode = str(
+            mapping.get("split_mode", _DEFAULT_SPLIT_MODE)
+        ).lower()
+        self.split_seed = int(mapping.get("split_seed", _DEFAULT_SPLIT_SEED))
+        self.train_fraction = float(
+            mapping.get("train_fraction", _DEFAULT_TRAIN_FRACTION)
+        )
+        self.val_fraction = float(
+            mapping.get("val_fraction", _DEFAULT_VAL_FRACTION)
+        )
+        self.test_fraction = float(
+            mapping.get("test_fraction", _DEFAULT_TEST_FRACTION)
+        )
+        self.allow_empty_feature_fallback = bool(
+            mapping.get("allow_empty_feature_fallback", True)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of split fields."""
+        return {
+            "split_mode": self.split_mode,
+            "split_seed": self.split_seed,
+            "train_fraction": self.train_fraction,
+            "val_fraction": self.val_fraction,
+            "test_fraction": self.test_fraction,
+            "allow_empty_feature_fallback": (
+                self.allow_empty_feature_fallback
+            ),
+        }
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if split knobs are invalid."""
+        if self.split_mode not in _ALLOWED_SPLIT_MODES:
+            raise ValueError(
+                "split_mode must be one of "
+                f"{sorted(_ALLOWED_SPLIT_MODES)}, got {self.split_mode!r}"
+            )
+        frac_sum = (
+            self.train_fraction + self.val_fraction + self.test_fraction
+        )
+        if abs(frac_sum - 1.0) > 1e-6:
+            raise ValueError(
+                "train/val/test fractions must sum to 1.0, "
+                f"got {frac_sum}"
+            )
+
+
 class RealDataBatchMask:
     """Batch size and artificial-mask knobs inside the YAML ``data`` section.
 
@@ -298,6 +421,10 @@ class RealDataConfig:
         ``T``, stride, ``F``, feature names.
     batch : RealDataBatchMask
         ``batch_size``, ``mask_rate``, ``block_len``.
+    transform : RealDataTransform
+        Optional log1p / clip knobs (WP5).
+    split : RealDataSplit
+        Split mode / seed / fractions and empty-feature fallback.
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -312,6 +439,41 @@ class RealDataConfig:
         self.paths = RealDataPaths(mapping)
         self.window = RealDataWindow(mapping)
         self.batch = RealDataBatchMask(mapping)
+        transform_raw = mapping.get("transform") or {}
+        if not isinstance(transform_raw, Mapping):
+            raise ValueError("data.transform must be a mapping when set")
+        self.transform = RealDataTransform(transform_raw)
+        self.split = RealDataSplit(mapping)
+
+    @property
+    def split_mode(self) -> str:
+        """Forward ``split.split_mode`` for call-site parity."""
+        return self.split.split_mode
+
+    @property
+    def split_seed(self) -> int:
+        """Forward ``split.split_seed`` for call-site parity."""
+        return self.split.split_seed
+
+    @property
+    def train_fraction(self) -> float:
+        """Forward ``split.train_fraction`` for call-site parity."""
+        return self.split.train_fraction
+
+    @property
+    def val_fraction(self) -> float:
+        """Forward ``split.val_fraction`` for call-site parity."""
+        return self.split.val_fraction
+
+    @property
+    def test_fraction(self) -> float:
+        """Forward ``split.test_fraction`` for call-site parity."""
+        return self.split.test_fraction
+
+    @property
+    def allow_empty_feature_fallback(self) -> bool:
+        """Forward ``split.allow_empty_feature_fallback`` for call-site parity."""
+        return self.split.allow_empty_feature_fallback
 
     @property
     def seq_len(self) -> int:
@@ -391,6 +553,8 @@ class RealDataConfig:
         merged.update(self.window.to_dict())
         merged.update(self.batch.to_dict())
         merged.update(self.paths.to_dict())
+        merged["transform"] = self.transform.to_dict()
+        merged.update(self.split.to_dict())
         return merged
 
     def validate(self) -> None:
@@ -398,6 +562,8 @@ class RealDataConfig:
         self.paths.validate()
         self.window.validate()
         self.batch.validate(self.window.seq_len)
+        self.transform.validate()
+        self.split.validate()
 
     def resolve_processed_dir(self, repo_root: Path) -> Path:
         """Resolve ``processed_dir`` against ``repo_root`` when relative.
@@ -507,6 +673,8 @@ class RealM2Config:
         Full reverse-sample knobs (WP4 primary; WP3 uses extras).
     extras : RealTrainExtras
         Snapshot / sensitivity knobs.
+    model : ScoreNetConfig
+        Optional ``model:`` section (legacy ``tcn_v1`` defaults).
     """
 
     def __init__(self, mapping: Mapping[str, Any]) -> None:
@@ -523,6 +691,9 @@ class RealM2Config:
         self.train = TrainConfig(mapping["train"])
         self.sample = SampleConfig(mapping["sample"])
         self.extras = RealTrainExtras(mapping["train"])
+        model_raw = dict(mapping.get("model") or {})
+        model_raw.setdefault("n_features", self.data.n_features)
+        self.model = ScoreNetConfig.from_dict(model_raw)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a nested dict mirroring the YAML layout.
@@ -540,6 +711,7 @@ class RealM2Config:
             "sde": self.sde.to_dict(),
             "train": train_dict,
             "sample": self.sample.to_dict(),
+            "model": self.model.to_dict(),
         }
 
     def validate(self) -> None:
@@ -549,6 +721,12 @@ class RealM2Config:
         self.train.validate()
         self.sample.validate()
         self.extras.validate()
+        self.model.validate()
+        if self.model.n_features != self.data.n_features:
+            raise ValueError(
+                "model.n_features must match data.n_features, "
+                f"got {self.model.n_features} vs {self.data.n_features}"
+            )
         if self.train.protocol.mask_mode not in _ALLOWED_MASK_MODES:
             raise ValueError(
                 f"unsupported mask_mode={self.train.protocol.mask_mode!r}"

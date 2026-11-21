@@ -776,6 +776,8 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
     transform = config.data.transform
     legacy_model = default_score_net_config(config.data.n_features)
     # (condition_is_bad, flag_name) — loop keeps branch count down.
+    # shortcut: keep refusing parameterization / sample.t_eps until
+    # real_val + trainer val hook wrap ScoreFromEps and resolve sample t_eps.
     checks: tuple[tuple[bool, str], ...] = (
         (protocol.parameterization != "score", "train.parameterization"),
         (protocol.ema_decay is not None, "train.ema_decay"),

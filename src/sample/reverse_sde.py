@@ -13,6 +13,8 @@ ReverseSDEImputer
 
 Functions
 ---------
+resolve_sample_t_eps
+    Prefer ``sample.t_eps`` when set, else ``train.t_eps``.
 context_from_toy_config
     Map ``ToyM1Config`` (+ model) into an ``ImputeContext``.
 context_from_real_config
@@ -48,6 +50,7 @@ from src.data.schema import (
     N_AXES,
     TIME_AXIS,
 )
+from src.models.score_from_eps import as_score_model
 from src.sde.vp_sde import VPSDE
 
 _SAMPLE_AXIS = 1
@@ -584,76 +587,53 @@ def warn_observed_pairing(
     return pairing
 
 
-def context_from_toy_config(
+def resolve_sample_t_eps(
+        sample_t_eps: float | None,
+        train_t_eps: float,
+) -> float:
+    """Return ``sample.t_eps`` when set, else ``train.t_eps``."""
+    if sample_t_eps is None:
+        return float(train_t_eps)
+    return float(sample_t_eps)
+
+
+def _impute_context_from_config(
         model: Any,
-        config: ToyM1Config,
+        config: ToyM1Config | RealM2Config,
 ) -> ImputeContext:
-    """Build an ``ImputeContext`` from a toy M1 config and score model.
-
-    Parameters
-    ----------
-    model : Any
-        Trained (or randomly initialized) score callable / Equinox module.
-    config : ToyM1Config
-        Validated config; uses ``sde``, ``sample``, and ``train.protocol.t_eps``.
-
-    Returns
-    -------
-    ImputeContext
-        Ready for ``ReverseSDEImputer``.
-    """
-    warn_observed_pairing(
-        config.train.protocol.observed_input,
-        config.sample.observed_mode,
-    )
+    """Shared toy/real wiring: pairing warn, ``t_eps``, eps wrap."""
+    protocol = config.train.protocol
+    sample = config.sample
+    warn_observed_pairing(protocol.observed_input, sample.observed_mode)
+    sde = VPSDE(config.sde)
     settings = ImputeSolverSettings(
-        solver_steps=int(config.sample.solver_steps),
-        t_eps=float(config.train.protocol.t_eps),
-        observed_mode=str(config.sample.observed_mode),
+        solver_steps=int(sample.solver_steps),
+        t_eps=resolve_sample_t_eps(sample.t_eps, protocol.t_eps),
+        observed_mode=str(sample.observed_mode),
     )
     context = ImputeContext(
-        model=model,
-        sde=VPSDE(config.sde),
+        model=as_score_model(model, sde, protocol.parameterization),
+        sde=sde,
         settings=settings,
     )
     context.validate()
     return context
+
+
+def context_from_toy_config(
+        model: Any,
+        config: ToyM1Config,
+) -> ImputeContext:
+    """Build an ``ImputeContext`` from a toy M1 config and model."""
+    return _impute_context_from_config(model, config)
 
 
 def context_from_real_config(
         model: Any,
         config: RealM2Config,
 ) -> ImputeContext:
-    """Build an ``ImputeContext`` from a real M2 config and score model.
-
-    Parameters
-    ----------
-    model : Any
-        Trained (or randomly initialized) score callable / Equinox module.
-    config : RealM2Config
-        Validated config; uses ``sde``, ``sample``, and ``train.protocol.t_eps``.
-
-    Returns
-    -------
-    ImputeContext
-        Ready for ``ReverseSDEImputer``.
-    """
-    warn_observed_pairing(
-        config.train.protocol.observed_input,
-        config.sample.observed_mode,
-    )
-    settings = ImputeSolverSettings(
-        solver_steps=int(config.sample.solver_steps),
-        t_eps=float(config.train.protocol.t_eps),
-        observed_mode=str(config.sample.observed_mode),
-    )
-    context = ImputeContext(
-        model=model,
-        sde=VPSDE(config.sde),
-        settings=settings,
-    )
-    context.validate()
-    return context
+    """Build an ``ImputeContext`` from a real M2 config and model."""
+    return _impute_context_from_config(model, config)
 
 
 def grid_timestamps(seq_len: int) -> jnp.ndarray:
@@ -701,17 +681,13 @@ def _integrate_reverse(
     jax.Array
         State at ``t ≈ t_eps``, shape ``(T, F)``.
     """
-    t0 = 0.0
-    t1 = sde.t_diff - settings.t_eps
-    step_dt = t1 / float(settings.solver_steps)
     y0_flat = pack.flat_state()
-    terms = _reverse_multiterm(
+    terms, t0, t1, step_dt = _reverse_multiterm(
         model,
         sde,
         pack,
         settings,
         key,
-        (t0, t1, step_dt),
     )
     solution = diffeqsolve(
         terms,
@@ -732,9 +708,8 @@ def _reverse_multiterm(
         pack: _ReversePack,
         settings: ImputeSolverSettings,
         key: jax.Array,
-        time_span: tuple[float, float, float],
-) -> MultiTerm:
-    """Build Diffrax ``MultiTerm`` for reverse integration.
+) -> tuple[MultiTerm, float, float, float]:
+    """Build Diffrax ``MultiTerm`` and reverse-time span for one solve.
 
     Parameters
     ----------
@@ -745,18 +720,24 @@ def _reverse_multiterm(
     pack : _ReversePack
         Window state / observations / mask.
     settings : ImputeSolverSettings
-        Includes ``observed_mode`` for score-input replacement.
+        ``t_eps``, step count, and ``observed_mode``.
     key : jax.Array
         Split into Brownian-tree and observed-replacement streams.
-    time_span : tuple of float
-        ``(t0, t1, step_dt)`` in reverse-time coordinate.
 
     Returns
     -------
-    MultiTerm
+    terms : MultiTerm
         Drift ODE term plus diffusion control term.
+    t0 : float
+        Reverse-time start (``0``).
+    t1 : float
+        Reverse-time end (``T_diff - t_eps``).
+    step_dt : float
+        Euler step size.
     """
-    t0, t1, step_dt = time_span
+    t0 = 0.0
+    t1 = sde.t_diff - settings.t_eps
+    step_dt = t1 / float(settings.solver_steps)
     key_bm, key_obs = jax.random.split(key)
     n_flat = int(pack.state_0.size)
     brownian = VirtualBrownianTree(
@@ -766,10 +747,11 @@ def _reverse_multiterm(
         shape=(n_flat,),
         key=key_bm,
     )
-    return MultiTerm(
+    terms = MultiTerm(
         ODETerm(_make_drift_fn(model, sde, pack, settings, key_obs)),
         ControlTerm(_make_diffusion_fn(sde, pack.mask), brownian),
     )
+    return terms, t0, t1, step_dt
 
 
 def _saved_endpoint(

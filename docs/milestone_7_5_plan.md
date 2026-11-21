@@ -222,6 +222,13 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
     coefficient of variation over the last 100 steps is lower than the
     `score` run's (regression guard, loose threshold).
 - **Done when:** the toy M1 path trains and imputes with `parameterization: eps`.
+- **Done (2026-11-21):** Toy+real DSM `parameterization: eps` (target `ε`); plain
+  `ScoreFromEps` + `context_from_*` wrap; `resolve_sample_t_eps`; `obs_loss_weight: 0`
+  already in `real_m7_5.yaml`. Decisions: keep real refuse for `eps`/`sample.t_eps`
+  until val hook wraps; adapt refuses non-`score` until WP-B4; drop unused
+  `std_floor` field. Commands:
+  `pytest tests/test_wp2_eps_parameterization.py -q` → **6 passed** (~34s);
+  `pytest -q` → **170 passed** in ~90s.
 
 ### WP3 — Score network v2 (findings 5, 6)
 - Add `arch: tcn_v2` next to the current network (keep `tcn_v1` untouched

@@ -29,7 +29,7 @@ impute_result_is_current
 Session key constants
 ---------------------
 SESSION_ADAPT_KEY / SESSION_RESULT_KEY / SESSION_FEATURES_KEY /
-SESSION_RESULT_DIGEST_KEY
+SESSION_RESULT_DIGEST_KEY / SESSION_RESULT_WINDOWS_KEY
     Shared ``st.session_state`` keys for bind + Fill results.
 caps_display_from_config
     Build ``AdaptCapsDisplay`` from ``AdaptM7Config``.
@@ -427,6 +427,7 @@ SESSION_ADAPT_KEY = "m7_bound_adapt"
 SESSION_RESULT_KEY = "m4_impute_result"
 SESSION_FEATURES_KEY = "m4_feature_names"
 SESSION_RESULT_DIGEST_KEY = "m4_impute_result_digest"
+SESSION_RESULT_WINDOWS_KEY = "m4_impute_result_windows"
 
 
 def content_digest_from_bytes(raw: bytes) -> str:
@@ -489,6 +490,7 @@ def reset_session_binding(state: MutableMapping) -> None:
     state.pop(SESSION_RESULT_KEY, None)
     state.pop(SESSION_FEATURES_KEY, None)
     state.pop(SESSION_RESULT_DIGEST_KEY, None)
+    state.pop(SESSION_RESULT_WINDOWS_KEY, None)
 
 
 def impute_result_is_current(

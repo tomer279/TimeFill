@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +45,14 @@ import yaml
 
 from app.demo_eval_smoke import DemoEvalSmokeRequest, run_demo_eval_smoke
 from app.export_frames import (
-    MeanFillExportRequest,
-    SampleExportRequest,
+    covered_row_range,
     mean_fill_dataframe,
+    mean_fill_download_filename,
+    mean_fill_request_from_windows,
+    sample_request_from_windows,
     samples_long_dataframe,
+    samples_long_download_filename,
+    truncation_warning_message,
 )
 from app.flexible_ingest import (
     ColumnRoleMap,
@@ -88,8 +93,9 @@ _EXIT_UNEXPECTED = 1
 _EXIT_INGEST = 2
 _EXIT_NAN = 3
 _EXIT_TIMEOUT = 4
-_MEAN_FILL_NAME = "mean_fill.csv"
-_SAMPLES_NAME = "samples_long.csv"
+_MEAN_FILL_STEM = "mean_fill"
+_SAMPLES_LONG_STEM = "samples_long"
+_CAP_KNOB_CLI = "window.max_windows / --max-windows"
 _MODE_NONE = "none"
 _MODE_SCRATCH = "scratch"
 _NAN_TOKEN = "non-finite"
@@ -564,14 +570,47 @@ def _write_mean_fill(
     pathlib.Path
         Written CSV path.
     """
-    mean_path = session.run_dir / _MEAN_FILL_NAME
-    mean_fill_dataframe(
-        MeanFillExportRequest(
-            mean_fill=mean_fill,
-            feature_names=tuple(windows.feature_names),
+    out_name = _mean_fill_out_name(windows)
+    if windows.is_partial() and windows.valid_len is not None:
+        print(
+            truncation_warning_message(
+                int(windows.valid_len.sum()),
+                int(windows.source_n_rows or 0),
+                _CAP_KNOB_CLI,
+            ),
+            file=sys.stderr,
         )
+    mean_path = session.run_dir / out_name
+    mean_fill_dataframe(
+        mean_fill_request_from_windows(mean_fill, windows)
     ).to_csv(mean_path, index=False)
     return mean_path
+
+
+def _mean_fill_out_name(windows: AdaptedWindows) -> str:
+    """Return ``mean_fill.csv`` or a partial ``rows_a-b`` filename."""
+    return _export_out_name(windows, _MEAN_FILL_STEM, mean_fill_download_filename)
+
+
+def _samples_long_out_name(windows: AdaptedWindows) -> str:
+    """Return ``samples_long.csv`` or a partial ``rows_a-b`` filename."""
+    return _export_out_name(
+        windows,
+        _SAMPLES_LONG_STEM,
+        samples_long_download_filename,
+    )
+
+
+def _export_out_name(
+        windows: AdaptedWindows,
+        stem: str,
+        namer: Callable[..., str],
+) -> str:
+    """Build a full or partial export filename from window provenance."""
+    if not windows.is_partial() or windows.row_index is None:
+        return namer(False, stem=stem)
+    row_start, row_end = covered_row_range(windows)
+    return namer(True, row_start, row_end, stem=stem)
 
 
 def _write_samples(
@@ -595,12 +634,9 @@ def _write_samples(
     pathlib.Path
         Written CSV path.
     """
-    samples_path = session.run_dir / _SAMPLES_NAME
+    samples_path = session.run_dir / _samples_long_out_name(windows)
     samples_long_dataframe(
-        SampleExportRequest(
-            samples=samples,
-            feature_names=tuple(windows.feature_names),
-        )
+        sample_request_from_windows(samples, windows)
     ).to_csv(samples_path, index=False)
     return samples_path
 
@@ -625,6 +661,9 @@ def _run_file_local_smoke(
         MCAR rate and sample knobs.
     """
     smoke_idx = session.split.smoke_idx
+    smoke_pad = None
+    if windows.pad is not None:
+        smoke_pad = windows.pad.take(np.asarray(smoke_idx))
     smoke_windows = AdaptedWindows(
         values=np.asarray(windows.values[smoke_idx], dtype=np.float32),
         native_mask=np.asarray(
@@ -632,6 +671,7 @@ def _run_file_local_smoke(
         ),
         feature_names=tuple(windows.feature_names),
         entity_ids=np.asarray(windows.entity_ids[smoke_idx]),
+        pad=smoke_pad,
     )
     smoke = run_demo_eval_smoke(
         imputer,

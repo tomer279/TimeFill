@@ -970,3 +970,22 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 
 - Multi-seed bench runner (WP7; `bench_m7_5.yaml` lists seeds for later)
 - WP1+ consume flags in loss/sampler/net (partially done: `observed_input` in loss; `replace_noised` in sampler drift, not yet on train-val/bench/app paths)
+
+## App honest export (WP-B3)
+
+- Download merges with **`m_native`** (not demo ``m_eval``). Charts / quick-check
+  metrics still use ``m_eval``. Long-sample CSV freezes native cells to
+  ``windows.values`` before export so demo hides cannot look "observed".
+- Pad cells (``row_index == -1``) are omitted from wide and long downloads.
+- ``row_index`` is 0-based on the series that was windowed: Exact = input row
+  order; Flexible = post-hourly-bin grid (not raw CSV row count when binning
+  changes length). Values are float32 after ingest (not CSV text bytes).
+- Wide CSV: ``row_index``, optional ``timestamp`` / ``entity``, features,
+  ``<feature>_imputed``.
+- Long CSV: ``sample_id``, ``row_index``, optional ``timestamp``, ``feature``,
+  ``value``, ``is_imputed``.
+- Window-cap truncation: UI warning names the active knob
+  (``smoke.max_windows`` pretrained, ``window.max_windows`` / ``--max-windows``
+  adapt/CLI). Partial filenames:
+  ``timefill_mean_fill_partial_rows_{start}-{end}.csv`` (UI) /
+  ``mean_fill_partial_rows_{start}-{end}.csv`` (CLI).

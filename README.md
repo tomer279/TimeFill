@@ -446,8 +446,9 @@ streamlit run app/streamlit_app.py
 
 In the app: choose the bundled sample (or upload a CSV with the frozen
 columns) → **Fill missing values** → inspect mean ± bands → download the
-mean-fill CSV. Optional: multi-sample long CSV; **Run a quick quality check**
-(smoke only).
+best-estimate CSV (native observed values kept; only native gaps filled;
+pad rows omitted; optional ``timestamp`` / ``entity`` / ``*_imputed``).
+Optional: multi-sample long CSV; **Run a quick quality check** (smoke only).
 
 ### 3) Compute limits (CPU vs GPU)
 
@@ -456,9 +457,11 @@ mean-fill CSV. Optional: multi-sample long CSV; **Run a quick quality check**
   report settings (`50` / `100` in `configs/bench_m3.yaml`) is much slower.
 - **GPU:** optional. Install a matching JAX CUDA build (see Install →
   JAX: CPU vs CUDA); same config, shorter wall time.
-- **Window batching:** the UI processes at most `smoke.max_windows`
-  (default **4**). Longer uploads need another run or a deliberate cap
-  increase in `configs/app_m4.yaml`.
+- **Window batching:** the UI caps at `smoke.max_windows` (default **4**);
+  the adapt/CLI path caps at `window.max_windows` / `--max-windows`
+  (default **4** in `adapt_m7.yaml`). Longer series: raise the active knob.
+  Partial fills warn in the UI/stderr and use a
+  ``*_partial_rows_{start}-{end}.csv`` filename.
 
 Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
 

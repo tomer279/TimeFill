@@ -17,8 +17,20 @@ AdaptUiOutcome
 
 Functions
 ---------
+content_digest_from_bytes
+    SHA-256 hex digest of raw upload / sample bytes.
 make_upload_fingerprint
-    Stable key for session invalidation when the upload changes.
+    Bind key from content digest (label/mode/features display-only).
+reset_session_binding
+    Clear adapt bind + impute result keys on a session-state mapping.
+impute_result_is_current
+    Whether a stored Fill result digest matches the current upload.
+
+Session key constants
+---------------------
+SESSION_ADAPT_KEY / SESSION_RESULT_KEY / SESSION_FEATURES_KEY /
+SESSION_RESULT_DIGEST_KEY
+    Shared ``st.session_state`` keys for bind + Fill results.
 caps_display_from_config
     Build ``AdaptCapsDisplay`` from ``AdaptM7Config``.
 prepare_adapt_windows
@@ -33,6 +45,8 @@ format_adapt_failure
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -409,29 +423,95 @@ class AdaptUiOutcome:
         return self.failure.as_markdown()
 
 
-def make_upload_fingerprint(
-        source_label: str,
-        ingest_mode: str,
-        feature_names: tuple[str, ...],
-) -> str:
-    """Build a stable fingerprint for session invalidation.
+SESSION_ADAPT_KEY = "m7_bound_adapt"
+SESSION_RESULT_KEY = "m4_impute_result"
+SESSION_FEATURES_KEY = "m4_feature_names"
+SESSION_RESULT_DIGEST_KEY = "m4_impute_result_digest"
+
+
+def content_digest_from_bytes(raw: bytes) -> str:
+    """Return a SHA-256 hex digest of raw CSV bytes.
 
     Parameters
     ----------
-    source_label : str
-        Bundled label or upload filename.
-    ingest_mode : str
-        ``exact_beijing`` or ``flexible``.
-    feature_names : tuple of str
-        Mapped feature names.
+    raw : bytes
+        Uploaded or sample file bytes.
 
     Returns
     -------
     str
-        Opaque fingerprint string.
+        Hex digest used as the session bind identity.
     """
-    joined = "|".join(feature_names)
-    return f"{source_label}::{ingest_mode}::{joined}"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def make_upload_fingerprint(
+        source_label: str,
+        ingest_mode: str,
+        feature_names: tuple[str, ...],
+        content_digest: str,
+) -> str:
+    """Build the session bind key from content digest only.
+
+    Label, mode, and feature names stay in the signature for UI call
+    sites; they are not part of the bind key.
+
+    Parameters
+    ----------
+    source_label : str
+        Bundled label or upload filename (display only).
+    ingest_mode : str
+        ``exact_beijing`` or ``flexible`` (display only).
+    feature_names : tuple of str
+        Mapped feature names (display only).
+    content_digest : str
+        ``content_digest_from_bytes`` result.
+
+    Returns
+    -------
+    str
+        Opaque fingerprint string (the content digest).
+    """
+    # Bind on bytes only; other args kept for call-site compatibility.
+    del source_label, ingest_mode, feature_names
+    return content_digest
+
+
+def reset_session_binding(state: MutableMapping) -> None:
+    """Clear adapt bind and Fill result keys from a session mapping.
+
+    Parameters
+    ----------
+    state : MutableMapping
+        ``st.session_state`` or a hermetic dict stand-in.
+    """
+    state.pop(SESSION_ADAPT_KEY, None)
+    state.pop(SESSION_RESULT_KEY, None)
+    state.pop(SESSION_FEATURES_KEY, None)
+    state.pop(SESSION_RESULT_DIGEST_KEY, None)
+
+
+def impute_result_is_current(
+        stored_digest: str | None,
+        current_digest: str,
+) -> bool:
+    """Return whether stored Fill results match the current upload.
+
+    Parameters
+    ----------
+    stored_digest : str or None
+        Digest saved with the last Fill, if any.
+    current_digest : str
+        Digest of the data currently loaded.
+
+    Returns
+    -------
+    bool
+        ``True`` only when both are equal non-empty strings.
+    """
+    if stored_digest is None or current_digest == "":
+        return False
+    return stored_digest == current_digest
 
 
 def caps_display_from_config(

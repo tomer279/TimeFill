@@ -35,7 +35,9 @@ import jax.numpy as jnp
 import optax
 
 from src.data.normalize import resolve_scaler_path
+from src.data.real import load_processed_dataset
 from src.data.real_config import RealM2Config, load_real_m2_config
+from src.eval.split_pin import build_split_manifest, write_split_manifest
 from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
@@ -60,6 +62,8 @@ from src.train.real_val import M2ValHookBundle
 _NAN_MSG = "non-finite train loss detected; aborting"
 _VAL_MC_DRAWS = 4
 _LOSS_PLOT_TITLE = "M2 conditional DSM (real windows)"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_FROZEN_ARTIFACT_DIRS = ("artifacts/m2", "artifacts/m3", "artifacts/m7")
 
 __all__ = [
     "M2Trainer",
@@ -69,6 +73,7 @@ __all__ = [
     "build_real_train_step",
     "load_normalized_pool",
     "run_m2_training",
+    "run_m2_training_from_config",
     "run_mask_rate_sensitivity",
 ]
 
@@ -650,7 +655,23 @@ def run_m2_training(config_path: Path | str) -> TrainHistory:
     TrainHistory
         Logged metrics (CSV/PNG written under ``artifact_dir``).
     """
-    config = load_real_m2_config(config_path)
+    return run_m2_training_from_config(load_real_m2_config(config_path))
+
+
+def run_m2_training_from_config(config: RealM2Config) -> TrainHistory:
+    """Train from an in-memory ``RealM2Config`` (CLI overrides share this).
+
+    Parameters
+    ----------
+    config : RealM2Config
+        Validated config (possibly mutated by CLI overrides).
+
+    Returns
+    -------
+    TrainHistory
+        Logged metrics (CSV/PNG written under ``artifact_dir``).
+    """
+    _assert_wp0_consumable(config)
     paths, pool = _prepare_artifacts_and_pool(config)
     trainer, key_train = _build_m2_trainer(config, paths, pool)
     _model, history = trainer.run(key_train)
@@ -661,7 +682,7 @@ def run_m2_training(config_path: Path | str) -> TrainHistory:
 def _prepare_artifacts_and_pool(
         config: RealM2Config,
 ) -> tuple[ArtifactPaths, RealBatchPool]:
-    """Ensure artifact dirs, fit/save scaler, return paths and pool.
+    """Ensure artifact dirs, fit/save scaler, write split pin, return pool.
 
     Parameters
     ----------
@@ -676,10 +697,108 @@ def _prepare_artifacts_and_pool(
         Normalized train/val pools.
     """
     paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
+    _assert_not_frozen_artifact_dir(paths)
     paths.ensure()
+    # shortcut: delete best before manifest so pin never outlives the ckpt.
+    _clear_stale_checkpoint_files(paths)
     pool, scaler = load_normalized_pool(config)
     scaler.save(resolve_scaler_path(paths.checkpoint_dir()))
+    processed = config.data.resolve_processed_dir(_REPO_ROOT)
+    _dataset, split = load_processed_dataset(processed)
+    write_split_manifest(
+        paths.checkpoint_dir(),
+        build_split_manifest(
+            processed_dir=processed,
+            split_mode=config.data.split_mode,
+            split_seed=config.data.split_seed,
+            fractions={
+                "train": config.data.train_fraction,
+                "val": config.data.val_fraction,
+                "test": config.data.test_fraction,
+            },
+            split=split,
+        ),
+    )
     return paths, pool
+
+
+def _clear_stale_checkpoint_files(paths: ArtifactPaths) -> None:
+    """Remove prior best checkpoint / sidecar before writing a new pin."""
+    best = paths.best_checkpoint()
+    if best.is_file():
+        best.unlink()
+    sidecar = paths.model_config()
+    if sidecar.is_file():
+        sidecar.unlink()
+
+
+def _assert_not_frozen_artifact_dir(paths: ArtifactPaths) -> None:
+    """Refuse train writes into frozen claim artifact roots.
+
+    Parameters
+    ----------
+    paths : ArtifactPaths
+        Resolved artifact layout for this run.
+
+    Raises
+    ------
+    RuntimeError
+        When ``paths.root`` is ``artifacts/m2``, ``m3``, or ``m7``.
+    """
+    root = paths.root.resolve()
+    for rel in _FROZEN_ARTIFACT_DIRS:
+        frozen = (_REPO_ROOT / rel).resolve()
+        if root == frozen or root.is_relative_to(frozen):
+            raise RuntimeError(
+                f"refusing to train into frozen claim dir {paths.root}"
+            )
+
+
+def _assert_wp0_consumable(config: RealM2Config) -> None:
+    """Raise if YAML asks for M7.5 flags that training does not yet consume.
+
+    Parameters
+    ----------
+    config : RealM2Config
+        Config about to train.
+
+    Raises
+    ------
+    NotImplementedError
+        Naming each non-legacy unused setting.
+    """
+    protocol = config.train.protocol
+    sample = config.sample
+    transform = config.data.transform
+    legacy_model = default_score_net_config(config.data.n_features)
+    # (condition_is_bad, flag_name) — loop keeps branch count down.
+    checks: tuple[tuple[bool, str], ...] = (
+        (protocol.parameterization != "score", "train.parameterization"),
+        (protocol.observed_input != "noised", "train.observed_input"),
+        (protocol.ema_decay is not None, "train.ema_decay"),
+        (protocol.lr_schedule != "constant", "train.lr_schedule"),
+        (protocol.select_by != "val_dsm_loss", "train.select_by"),
+        (protocol.mixed_select != "per_batch", "train.mixed_select"),
+        (protocol.block_len_range is not None, "train.block_len_range"),
+        (protocol.max_blocks_per_feature != 1, "train.max_blocks_per_feature"),
+        (protocol.warmup_steps != 0, "train.warmup_steps"),
+        (config.model != legacy_model, "model.*"),
+        (sample.t_eps is not None, "sample.t_eps"),
+        (sample.diffusion_impl != "dense", "sample.diffusion_impl"),
+        (sample.point_estimate != "mean", "sample.point_estimate"),
+        (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
+        (bool(transform.log1p_features), "data.transform.log1p_features"),
+        (transform.clip_nonnegative, "data.transform.clip_nonnegative"),
+        (
+            not config.data.allow_empty_feature_fallback,
+            "data.allow_empty_feature_fallback",
+        ),
+    )
+    bad = [name for is_bad, name in checks if is_bad]
+    if bad:
+        raise NotImplementedError(
+            "M7.5 flags not wired yet: " + ", ".join(bad)
+        )
 
 
 def _build_m2_trainer(

@@ -15,6 +15,14 @@ save_checkpoint
     Serialize an Equinox model with ``eqx.tree_serialise_leaves``.
 load_checkpoint
     Deserialize into a like-shaped Equinox template.
+save_model_config
+    Write a ``model_config.json`` sidecar.
+load_model_config
+    Read a ``model_config.json`` sidecar.
+save_checkpoint_with_sidecar
+    Save ``.eqx`` plus ``model_config.json`` beside it.
+load_checkpoint_with_config
+    Load with sidecar template, or legacy defaults when absent.
 resolve_artifact_paths
     Build ``ArtifactPaths`` from a config ``artifact_dir`` string.
 stub_val_imputation_hook
@@ -24,15 +32,21 @@ stub_val_imputation_hook
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from src.models.score_net import ConditionalScoreNet
+from src.models.score_net import (
+    ConditionalScoreNet,
+    ScoreNetConfig,
+    default_score_net_config,
+)
 from src.plot_io import save_figure
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +55,7 @@ _LOSS_CSV_NAME = "loss_curves.csv"
 _LOSS_PNG_NAME = "loss_curves.png"
 _VAL_SUBDIR = "val_snapshots"
 _CKPT_SUBDIR = "checkpoints"
+_MODEL_CONFIG_NAME = "model_config.json"
 
 
 @dataclass(frozen=True)
@@ -55,6 +70,8 @@ class ArtifactPaths:
         Return ``<root>/checkpoints``.
     best_checkpoint
         Return path to the best-val score-net file.
+    model_config
+        Return path to the optional ``model_config.json`` sidecar.
     loss_csv
         Return path to the loss-history CSV.
     loss_png
@@ -94,6 +111,16 @@ class ArtifactPaths:
             ``.../checkpoints/best_score_net.eqx``.
         """
         return self.checkpoint_dir() / _BEST_CKPT_NAME
+
+    def model_config(self) -> Path:
+        """Return the optional score-net sidecar path.
+
+        Returns
+        -------
+        pathlib.Path
+            ``.../checkpoints/model_config.json``.
+        """
+        return self.checkpoint_dir() / _MODEL_CONFIG_NAME
 
     def loss_csv(self) -> Path:
         """Return the loss-history CSV path.
@@ -322,6 +349,94 @@ def load_checkpoint(
         Restored module.
     """
     return eqx.tree_deserialise_leaves(path, like)
+
+
+def save_model_config(path: Path, payload: Mapping[str, Any]) -> None:
+    """Write a ``model_config.json`` sidecar payload.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination JSON path.
+    payload : Mapping of str to Any
+        Typically ``score_net`` + ``parameterization`` + ``arch_version``.
+    """
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_model_config(path: Path) -> dict[str, Any]:
+    """Load a ``model_config.json`` sidecar.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Sidecar JSON path.
+
+    Returns
+    -------
+    dict of str to Any
+        Parsed payload.
+    """
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def save_checkpoint_with_sidecar(
+        path: Path,
+        model: ConditionalScoreNet,
+        model_config: Mapping[str, Any],
+) -> None:
+    """Serialize a score net and write ``model_config.json`` beside it.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination ``.eqx`` path.
+    model : ConditionalScoreNet
+        Model to serialize.
+    model_config : Mapping of str to Any
+        Sidecar payload written next to ``path``.
+    """
+    save_checkpoint(path, model)
+    save_model_config(Path(path).parent / _MODEL_CONFIG_NAME, model_config)
+
+
+def load_checkpoint_with_config(
+        path: Path,
+        n_features: int,
+        key: jax.Array,
+) -> ConditionalScoreNet:
+    """Load a checkpoint using a sidecar template when present.
+
+    Missing sidecar falls back to ``default_score_net_config(n_features)``.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Checkpoint ``.eqx`` path.
+    n_features : int
+        Feature count ``F`` used when the sidecar is absent.
+    key : jax.Array
+        PRNG key for building the Equinox template.
+
+    Returns
+    -------
+    ConditionalScoreNet
+        Restored module.
+    """
+    sidecar = Path(path).parent / _MODEL_CONFIG_NAME
+    if sidecar.is_file():
+        score_raw = dict(load_model_config(sidecar)["score_net"])
+        score_raw.setdefault("n_features", n_features)
+        config = ScoreNetConfig.from_dict(score_raw)
+    else:
+        config = default_score_net_config(n_features)
+    template = ConditionalScoreNet(key, config)
+    return load_checkpoint(path, template)
 
 
 def resolve_artifact_paths(artifact_dir: str) -> ArtifactPaths:

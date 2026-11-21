@@ -485,6 +485,7 @@ class M3BenchmarkRunner:
                 split=self.data.windows.split_name,
                 k_samples=self.grid.k_samples,
                 point_metrics=point_policy,
+                split_pinned=self.data.windows.split_pinned,
             ),
             n_target_cells=n_targets,
         )

@@ -4,8 +4,9 @@
 # Evaluation contract: docs/EVAL.md
 #
 # Prepare:  python scripts/prepare_m2_data.py --config configs/real_m2.yaml
-# Train (WP3): python scripts/train_m2_real.py --config configs/real_m2.yaml
-# CPU smoke example:
+# Train refuses artifact_dir in {artifacts/m2, m3, m7} (frozen claim dirs).
+# Point train.artifact_dir at a fresh path (e.g. artifacts/m2_smoke) first.
+# CPU smoke example (after changing artifact_dir away from artifacts/m2):
 #   python scripts/train_m2_real.py --config configs/real_m2.yaml \
 #     --epochs 2 --steps-per-epoch 2 --batch-size 2 \
 #     --snapshot-k 2 --snapshot-steps 10

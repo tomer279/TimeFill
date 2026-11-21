@@ -18,7 +18,7 @@ default_score_net_config
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import equinox as eqx
 import jax
@@ -39,6 +39,14 @@ _DEFAULT_N_LAYERS = 3
 _DEFAULT_KERNEL = 3
 _DEFAULT_TIME_EMBED = 32
 _DEFAULT_INDEX_FREQS = 4
+_DEFAULT_ARCH = "tcn_v1"
+_DEFAULT_TIME_EMBED_SCALE = 1.0
+_DEFAULT_TIME_COND = "stem"
+_DEFAULT_NORM = "none"
+_DEFAULT_NORM_GROUPS = 8
+_ALLOWED_ARCH = frozenset({"tcn_v1", "tcn_v2"})
+_ALLOWED_TIME_COND = frozenset({"stem", "per_block"})
+_ALLOWED_NORM = frozenset({"none", "group"})
 _TIME_MLP_WIDTH_MULT = 2
 _TIME_MLP_DEPTH = 1
 _OUT_KERNEL = 1
@@ -57,6 +65,8 @@ class ScoreNetConfig:
         Check M1-compatible ranges (features, odd kernel, even time embed).
     to_dict
         Serialize fields to a plain dict.
+    from_dict
+        Build a config from a sidecar / YAML mapping.
     in_channels
         Channel count after fusing ``[y_t, m, x_obs, index_enc]``.
 
@@ -74,6 +84,18 @@ class ScoreNetConfig:
         Even sinusoidal diffusion-time embedding size.
     n_index_frequencies : int
         Number of sin/cos pairs for regular-grid index encoding along ``T``.
+    arch : str
+        Architecture id (``tcn_v1`` legacy; ``tcn_v2`` reserved for WP3).
+    dilations : tuple of int or None
+        Explicit dilations; ``None`` means derive from ``n_layers``.
+    time_embed_scale : float
+        Multiplier on raw ``t`` before sinusoids (legacy ``1.0``).
+    time_cond : str
+        ``stem`` (legacy) or ``per_block`` (WP3).
+    norm : str
+        ``none`` (legacy) or ``group`` (WP3).
+    norm_groups : int
+        GroupNorm groups when ``norm == group``.
     """
 
     n_features: int
@@ -82,12 +104,23 @@ class ScoreNetConfig:
     kernel_size: int = _DEFAULT_KERNEL
     time_embed_dim: int = _DEFAULT_TIME_EMBED
     n_index_frequencies: int = _DEFAULT_INDEX_FREQS
+    arch: str = _DEFAULT_ARCH
+    dilations: tuple[int, ...] | None = None
+    time_embed_scale: float = _DEFAULT_TIME_EMBED_SCALE
+    time_cond: str = _DEFAULT_TIME_COND
+    norm: str = _DEFAULT_NORM
+    norm_groups: int = _DEFAULT_NORM_GROUPS
 
     def validate(self) -> None:
         """Raise ``ValueError`` if hyperparameters are invalid.
 
         M1 toy path uses ``F in {1, 2, 3}``; M2 real path uses ``F = 6``.
         """
+        self._validate_numeric()
+        self._validate_arch_options()
+
+    def _validate_numeric(self) -> None:
+        """Check sizes / parities used by the TCN body."""
         if self.n_features <= 0:
             raise ValueError(
                 "n_features must be positive, "
@@ -117,6 +150,44 @@ class ScoreNetConfig:
                 "n_index_frequencies must be positive, "
                 f"got {self.n_index_frequencies}"
             )
+        if self.time_embed_scale <= 0.0:
+            raise ValueError(
+                "time_embed_scale must be positive, "
+                f"got {self.time_embed_scale}"
+            )
+        if self.norm_groups <= 0:
+            raise ValueError(
+                f"norm_groups must be positive, got {self.norm_groups}"
+            )
+
+    def _validate_arch_options(self) -> None:
+        """Check arch enums and optional dilation schedule."""
+        if self.arch not in _ALLOWED_ARCH:
+            raise ValueError(
+                f"arch must be one of {sorted(_ALLOWED_ARCH)}, "
+                f"got {self.arch!r}"
+            )
+        if self.time_cond not in _ALLOWED_TIME_COND:
+            raise ValueError(
+                "time_cond must be one of "
+                f"{sorted(_ALLOWED_TIME_COND)}, got {self.time_cond!r}"
+            )
+        if self.norm not in _ALLOWED_NORM:
+            raise ValueError(
+                f"norm must be one of {sorted(_ALLOWED_NORM)}, "
+                f"got {self.norm!r}"
+            )
+        if self.dilations is None:
+            return
+        if len(self.dilations) != self.n_layers:
+            raise ValueError(
+                "len(dilations) must equal n_layers, "
+                f"got {len(self.dilations)} vs {self.n_layers}"
+            )
+        if any(int(item) <= 0 for item in self.dilations):
+            raise ValueError(
+                f"dilations must be positive, got {self.dilations!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -133,7 +204,63 @@ class ScoreNetConfig:
             "kernel_size": self.kernel_size,
             "time_embed_dim": self.time_embed_dim,
             "n_index_frequencies": self.n_index_frequencies,
+            "arch": self.arch,
+            "dilations": (
+                None if self.dilations is None else list(self.dilations)
+            ),
+            "time_embed_scale": self.time_embed_scale,
+            "time_cond": self.time_cond,
+            "norm": self.norm,
+            "norm_groups": self.norm_groups,
         }
+
+    @classmethod
+    def from_dict(cls, mapping: Mapping[str, Any]) -> "ScoreNetConfig":
+        """Build a config from a sidecar or YAML ``model`` mapping.
+
+        Parameters
+        ----------
+        mapping : Mapping[str, Any]
+            Must include ``n_features`` (or callers pass it in).
+
+        Returns
+        -------
+        ScoreNetConfig
+            Parsed config with legacy defaults for missing keys.
+        """
+        raw_dil = mapping.get("dilations", None)
+        dilations = (
+            None if raw_dil is None
+            else tuple(int(item) for item in raw_dil)
+        )
+        if dilations is not None and "n_layers" not in mapping:
+            n_layers = len(dilations)
+        else:
+            n_layers = int(mapping.get("n_layers", _DEFAULT_N_LAYERS))
+        return cls(
+            n_features=int(mapping["n_features"]),
+            hidden_channels=int(
+                mapping.get("hidden_channels", _DEFAULT_HIDDEN)
+            ),
+            n_layers=n_layers,
+            kernel_size=int(mapping.get("kernel_size", _DEFAULT_KERNEL)),
+            time_embed_dim=int(
+                mapping.get("time_embed_dim", _DEFAULT_TIME_EMBED)
+            ),
+            n_index_frequencies=int(
+                mapping.get("n_index_frequencies", _DEFAULT_INDEX_FREQS)
+            ),
+            arch=str(mapping.get("arch", _DEFAULT_ARCH)),
+            dilations=dilations,
+            time_embed_scale=float(
+                mapping.get("time_embed_scale", _DEFAULT_TIME_EMBED_SCALE)
+            ),
+            time_cond=str(mapping.get("time_cond", _DEFAULT_TIME_COND)),
+            norm=str(mapping.get("norm", _DEFAULT_NORM)),
+            norm_groups=int(
+                mapping.get("norm_groups", _DEFAULT_NORM_GROUPS)
+            ),
+        )
 
     def in_channels(self) -> int:
         """Return fused input channel count for the temporal stem.

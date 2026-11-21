@@ -469,6 +469,7 @@ def load_data_bundle(plan: BenchM3Plan) -> DataBundle:
             scaler=scaler,
             split_name=plan.selection.split_name,
             max_windows=plan.selection.max_windows,
+            checkpoint_dir=plan.paths.checkpoint.parent,
         )
     )
     bundle = DataBundle(windows=windows, scaler=scaler)

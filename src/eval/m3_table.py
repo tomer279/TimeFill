@@ -207,19 +207,23 @@ class RunMeta:
         TimeFill ensemble size from the bench config.
     point_metrics : str
         ``degenerate_k1`` or ``ensemble``.
+    split_pinned : bool
+        Whether the report windows were verified against a split manifest.
     """
 
     seeds: SeedPair
     split: str
     k_samples: int
     point_metrics: str
+    split_pinned: bool = False
 
-    def as_dict(self) -> dict[str, int | str]:
+    def as_dict(self) -> dict[str, int | str | bool]:
         """Return meta fields including flattened seed columns."""
-        payload: dict[str, int | str] = {
+        payload: dict[str, int | str | bool] = {
             "split": self.split,
             "k_samples": int(self.k_samples),
             "point_metrics": self.point_metrics,
+            "split_pinned": bool(self.split_pinned),
         }
         payload.update(self.seeds.as_dict())
         return payload
@@ -273,9 +277,9 @@ class MetricRecord:
     meta: RunMeta
     n_target_cells: int
 
-    def as_dict(self) -> dict[str, float | int | str | None]:
+    def as_dict(self) -> dict[str, float | int | str | bool | None]:
         """Flatten to the long-form artifact schema."""
-        payload: dict[str, float | int | str | None] = {
+        payload: dict[str, float | int | str | bool | None] = {
             "method": self.method,
             "protocol": self.protocol.name,
             "n_target_cells": int(self.n_target_cells),

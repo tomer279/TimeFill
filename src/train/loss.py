@@ -34,6 +34,12 @@ _MASK_MODE_BLOCK = "block"
 _MASK_MODE_MIXED = "mixed"
 _MIXED_BLOCK_THRESHOLD = 0.5
 _MASK_COMPARE_TOL = 0.5
+_OBSERVED_INPUT_NOISED = "noised"
+_OBSERVED_INPUT_CLEAN = "clean"
+_DEFAULT_OBSERVED_INPUT = _OBSERVED_INPUT_NOISED
+_ALLOWED_OBSERVED_INPUT = frozenset(
+    {_OBSERVED_INPUT_NOISED, _OBSERVED_INPUT_CLEAN}
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +120,8 @@ class DSMLossSettings:
         ``random``, ``block``, or ``mixed``.
     std_floor : float
         Floor for ``std(t)`` when forming the score target.
+    observed_input : str
+        ``noised`` (legacy) or ``clean`` (match frozen sampler).
     """
 
     mask_rate: float
@@ -122,6 +130,7 @@ class DSMLossSettings:
     obs_loss_weight: float
     mask_mode: str
     std_floor: float = _STD_FLOOR
+    observed_input: str = _DEFAULT_OBSERVED_INPUT
 
     def validate(self) -> None:
         """Raise ``ValueError`` if DSM settings are invalid."""
@@ -150,6 +159,20 @@ class DSMLossSettings:
             raise ValueError(
                 f"std_floor must be positive, got {self.std_floor}"
             )
+        if self.observed_input not in _ALLOWED_OBSERVED_INPUT:
+            raise ValueError(
+                "observed_input must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_INPUT)}, "
+                f"got {self.observed_input!r}"
+            )
+        if (
+            self.observed_input == _OBSERVED_INPUT_CLEAN
+            and self.obs_loss_weight != 0.0
+        ):
+            raise ValueError(
+                "observed_input='clean' requires obs_loss_weight=0 "
+                f"(got {self.obs_loss_weight})"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -166,6 +189,7 @@ class DSMLossSettings:
             "obs_loss_weight": self.obs_loss_weight,
             "mask_mode": self.mask_mode,
             "std_floor": self.std_floor,
+            "observed_input": self.observed_input,
         }
 
 
@@ -251,6 +275,8 @@ class ConditionalDSMLoss:
         )
         eps = jax.random.normal(keys.eps, x0.shape, dtype=jnp.float32)
         y_t = self.sde.forward_sample(x0, time, eps)
+        if self.settings.observed_input == _OBSERVED_INPUT_CLEAN:
+            y_t = mask * x_obs + (1.0 - mask) * y_t
         pred = model(y_t, time, mask, x_obs)
         target = self.score_target(eps, x0, time)
         weights = self.reduction_weights(mask)
@@ -392,6 +418,7 @@ def dsm_settings_from_config(config: ToyM1Config) -> DSMLossSettings:
         t_eps=config.train.protocol.t_eps,
         obs_loss_weight=config.train.protocol.obs_loss_weight,
         mask_mode=config.train.protocol.mask_mode,
+        observed_input=config.train.protocol.observed_input,
     )
     settings.validate()
     return settings

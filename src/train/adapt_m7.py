@@ -734,6 +734,7 @@ def _build_success_meta(
         "steps_per_epoch": int(request.config.train.schedule.steps_per_epoch),
         "batch_size": int(request.config.geometry.batch_size),
         "timeout_seconds": float(request.config.caps.timeout_seconds),
+        "observed_input": str(request.config.train.protocol.observed_input),
         "claim_discipline": (
             "file-local adapt smoke; not a Beijing/M3 claim expansion"
         ),

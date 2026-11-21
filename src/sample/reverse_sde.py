@@ -23,6 +23,7 @@ grid_timestamps
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +60,13 @@ _NOISE_INIT_FULL = "full"
 _ALLOWED_NOISE_INIT = frozenset(
     {_NOISE_INIT_MISSING_ONLY, _NOISE_INIT_FULL}
 )
+_DEFAULT_OBSERVED_MODE = "frozen_clean"
+_OBSERVED_MODE_FROZEN_CLEAN = "frozen_clean"
+_OBSERVED_MODE_REPLACE_NOISED = "replace_noised"
+_ALLOWED_OBSERVED_MODE = frozenset(
+    {_OBSERVED_MODE_FROZEN_CLEAN, _OBSERVED_MODE_REPLACE_NOISED}
+)
+_TIME_KEY_SCALE = 10_000
 _BM_TOL_FRACTION = 0.5
 _MAX_STEP_SLACK = 2
 _MASK_COMPARE_TOL = 0.5
@@ -90,6 +98,8 @@ class ImputeSolverSettings:
         Upper predictive quantile in ``[0, 1]`` (default 0.9).
     noise_init : str
         ``missing_only`` (default) or ``full`` — see ASSUMPTIONS.md.
+    observed_mode : str
+        ``frozen_clean`` (legacy) or ``replace_noised``.
     """
 
     solver_steps: int
@@ -97,6 +107,7 @@ class ImputeSolverSettings:
     quantile_low: float = _DEFAULT_QUANTILE_LOW
     quantile_high: float = _DEFAULT_QUANTILE_HIGH
     noise_init: str = _DEFAULT_NOISE_INIT
+    observed_mode: str = _DEFAULT_OBSERVED_MODE
 
     def validate(self) -> None:
         """Raise ``ValueError`` if solver settings are invalid."""
@@ -116,6 +127,12 @@ class ImputeSolverSettings:
                 "noise_init must be one of "
                 f"{sorted(_ALLOWED_NOISE_INIT)}, got {self.noise_init!r}"
             )
+        if self.observed_mode not in _ALLOWED_OBSERVED_MODE:
+            raise ValueError(
+                "observed_mode must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_MODE)}, "
+                f"got {self.observed_mode!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -131,6 +148,7 @@ class ImputeSolverSettings:
             "quantile_low": self.quantile_low,
             "quantile_high": self.quantile_high,
             "noise_init": self.noise_init,
+            "observed_mode": self.observed_mode,
         }
 
 
@@ -525,6 +543,47 @@ class ReverseSDEImputer:
         return jnp.where(observed, observations, noise)
 
 
+def warn_observed_pairing(
+        observed_input: str,
+        observed_mode: str,
+) -> str:
+    """Warn on non-legacy inconsistent train/sample observed pairing.
+
+    Parameters
+    ----------
+    observed_input : str
+        ``clean`` or ``noised`` from train settings.
+    observed_mode : str
+        ``frozen_clean`` or ``replace_noised`` from sample settings.
+
+    Returns
+    -------
+    str
+        ``"{observed_input}+{observed_mode}"``.
+    """
+    pairing = f"{observed_input}+{observed_mode}"
+    consistent = (
+        observed_input == "clean"
+        and observed_mode == _OBSERVED_MODE_FROZEN_CLEAN
+    ) or (
+        observed_input == "noised"
+        and observed_mode == _OBSERVED_MODE_REPLACE_NOISED
+    )
+    legacy = (
+        observed_input == "noised"
+        and observed_mode == _OBSERVED_MODE_FROZEN_CLEAN
+    )
+    if not legacy and not consistent:
+        warnings.warn(
+            "inconsistent observed pairing "
+            f"{pairing}; expected clean+frozen_clean or "
+            "noised+replace_noised",
+            UserWarning,
+            stacklevel=2,
+        )
+    return pairing
+
+
 def context_from_toy_config(
         model: Any,
         config: ToyM1Config,
@@ -543,9 +602,14 @@ def context_from_toy_config(
     ImputeContext
         Ready for ``ReverseSDEImputer``.
     """
+    warn_observed_pairing(
+        config.train.protocol.observed_input,
+        config.sample.observed_mode,
+    )
     settings = ImputeSolverSettings(
         solver_steps=int(config.sample.solver_steps),
         t_eps=float(config.train.protocol.t_eps),
+        observed_mode=str(config.sample.observed_mode),
     )
     context = ImputeContext(
         model=model,
@@ -574,9 +638,14 @@ def context_from_real_config(
     ImputeContext
         Ready for ``ReverseSDEImputer``.
     """
+    warn_observed_pairing(
+        config.train.protocol.observed_input,
+        config.sample.observed_mode,
+    )
     settings = ImputeSolverSettings(
         solver_steps=int(config.sample.solver_steps),
         t_eps=float(config.train.protocol.t_eps),
+        observed_mode=str(config.sample.observed_mode),
     )
     context = ImputeContext(
         model=model,
@@ -640,6 +709,7 @@ def _integrate_reverse(
         model,
         sde,
         pack,
+        settings,
         key,
         (t0, t1, step_dt),
     )
@@ -660,6 +730,7 @@ def _reverse_multiterm(
         model: Any,
         sde: VPSDE,
         pack: _ReversePack,
+        settings: ImputeSolverSettings,
         key: jax.Array,
         time_span: tuple[float, float, float],
 ) -> MultiTerm:
@@ -673,8 +744,10 @@ def _reverse_multiterm(
         VP-SDE coefficient provider.
     pack : _ReversePack
         Window state / observations / mask.
+    settings : ImputeSolverSettings
+        Includes ``observed_mode`` for score-input replacement.
     key : jax.Array
-        Brownian-tree key.
+        Split into Brownian-tree and observed-replacement streams.
     time_span : tuple of float
         ``(t0, t1, step_dt)`` in reverse-time coordinate.
 
@@ -684,16 +757,17 @@ def _reverse_multiterm(
         Drift ODE term plus diffusion control term.
     """
     t0, t1, step_dt = time_span
+    key_bm, key_obs = jax.random.split(key)
     n_flat = int(pack.state_0.size)
     brownian = VirtualBrownianTree(
         t0,
         t1,
         tol=step_dt * _BM_TOL_FRACTION,
         shape=(n_flat,),
-        key=key,
+        key=key_bm,
     )
     return MultiTerm(
-        ODETerm(_make_drift_fn(model, sde, pack)),
+        ODETerm(_make_drift_fn(model, sde, pack, settings, key_obs)),
         ControlTerm(_make_diffusion_fn(sde, pack.mask), brownian),
     )
 
@@ -734,6 +808,8 @@ def _make_drift_fn(
         model: Any,
         sde: VPSDE,
         pack: _ReversePack,
+        settings: ImputeSolverSettings,
+        key: jax.Array,
 ):
     """Build ``dY/dτ = -reverse_drift`` with observed coords frozen.
 
@@ -745,6 +821,10 @@ def _make_drift_fn(
         Forward / reverse coefficient provider.
     pack : _ReversePack
         Holds ``mask`` and ``observations`` for conditioning.
+    settings : ImputeSolverSettings
+        ``observed_mode`` selects clean freeze vs replace-noised score input.
+    key : jax.Array
+        Root key for per-time observed replacement noise.
 
     Returns
     -------
@@ -755,12 +835,29 @@ def _make_drift_fn(
     mask = pack.mask
     x_obs = pack.observations
     missing = 1.0 - mask
+    observed = jnp.abs(mask - MASK_OBSERVED) < _MASK_COMPARE_TOL
+    replace = settings.observed_mode == _OBSERVED_MODE_REPLACE_NOISED
 
     def drift(tau: Any, y_flat: Any, _args: Any) -> jnp.ndarray:
         state = y_flat.reshape(mask.shape)
         time = horizon - tau
+        if replace:
+            # shortcut: time-binned RNG; ok while solver_steps << 1e4
+            time_key = jax.random.fold_in(
+                key,
+                jnp.astype(time * _TIME_KEY_SCALE, jnp.int32),
+            )
+            eps = jax.random.normal(
+                time_key,
+                state.shape,
+                dtype=jnp.float32,
+            )
+            mean, std = sde.marginal_prob(x_obs, time)
+            y_model = jnp.where(observed, mean + std * eps, state)
+        else:
+            y_model = state
         score = model(
-            state[None, ...],
+            y_model[None, ...],
             time,
             mask[None, ...],
             x_obs[None, ...],

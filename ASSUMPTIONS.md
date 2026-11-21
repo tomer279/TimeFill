@@ -936,6 +936,14 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 | `data.transform.log1p_features` | `[]` | pollutants except O3 | Skew (WP5) |
 | `data.allow_empty_feature_fallback` | `true` | `false` | No silent identity scaler |
 
+### WP1 observed pairing
+
+- Consistent: `clean`+`frozen_clean` (M7.5) or `noised`+`replace_noised` (ablation).
+- Legacy `noised`+`frozen_clean` stays silent (differs from the plan's "warn on both inconsistent pairs"); other non-legacy inconsistent pairs warn at context build.
+- `replace_noised`: score sees `α(t) x_obs + σ(t) z` on `m==1`; SDE coords stay frozen; endpoint hard-replaced with clean `x_obs`.
+- Train path still refuses `sample.observed_mode != frozen_clean` until WP7/WP-B4 wire val/bench/app.
+- `observed_input=clean` requires `obs_loss_weight=0`.
+
 ## Split pinning (A5)
 
 - At train time, write `split_manifest.json` beside the checkpoint: mode, seed,
@@ -960,5 +968,5 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 
 ## Out of scope for WP0
 
-- Consuming the new flags in loss / sampler / net body (WP1–WP6)
 - Multi-seed bench runner (WP7; `bench_m7_5.yaml` lists seeds for later)
+- WP1+ consume flags in loss/sampler/net (partially done: `observed_input` in loss; `replace_noised` in sampler drift, not yet on train-val/bench/app paths)

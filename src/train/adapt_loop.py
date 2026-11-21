@@ -175,6 +175,7 @@ def dsm_settings_from_adapt(config: AdaptM7Config) -> DSMLossSettings:
         t_eps=float(config.train.protocol.t_eps),
         obs_loss_weight=float(config.train.protocol.obs_loss_weight),
         mask_mode=str(config.train.protocol.mask_mode),
+        observed_input=str(config.train.protocol.observed_input),
     )
     settings.validate()
     return settings

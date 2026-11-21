@@ -192,6 +192,15 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   - `replace_noised` sampler: observed cells at step `t` have empirical std
     close to `std(t)` over many draws (statistical test with loose tolerance).
 - **Done when:** both pairings run end-to-end on the toy config.
+- **Done (2026-11-21):** Train `observed_input=clean` overwrite in toy+real DSM;
+  sampler `replace_noised` (model-input only; freeze+final clean replace kept);
+  pairing warn helper (legacy `noised`+`frozen_clean` silent); `clean` requires
+  `obs_loss_weight=0`; DSM validate runs in `_assert_wp0_consumable` before
+  artifact wipe; `adapt_meta` logs `observed_input` only. Decisions: re-refuse
+  `sample.observed_mode != frozen_clean` until WP7/WP-B4 wire val/bench/app;
+  train_meta pairing deferred to WP4. Commands:
+  `pytest tests/test_wp1_observed_conditioning.py -q` → **10 passed**;
+  `pytest -q` → **164 passed** in ~70s.
 
 ### WP2 — Noise-prediction parameterization and loss weighting (findings 2, 3, 8)
 - Add `parameterization: score | eps`.

@@ -72,15 +72,26 @@ def _windows() -> AdaptedWindows:
     )
 
 
-def test_fingerprint_changes_with_features() -> None:
-    """Fingerprint must change when mapped feature names change."""
-    first = make_upload_fingerprint("u.csv", MODE_FLEXIBLE, _FLEX)
+def test_fingerprint_changes_with_content_digest() -> None:
+    """Fingerprint must change when upload bytes change (WP-B1)."""
+    from app.adapt_session_ui import content_digest_from_bytes
+
+    digest_a = content_digest_from_bytes(b"a,b\n1,2\n")
+    digest_b = content_digest_from_bytes(b"a,b\n3,4\n")
+    first = make_upload_fingerprint(
+        "u.csv",
+        MODE_FLEXIBLE,
+        _FLEX,
+        digest_a,
+    )
     second = make_upload_fingerprint(
         "u.csv",
         MODE_FLEXIBLE,
-        ("x", "y", "z"),
+        _FLEX,
+        digest_b,
     )
     assert first != second
+    assert digest_a != digest_b
 
 
 def test_caps_display_nested_under_attr_limit() -> None:

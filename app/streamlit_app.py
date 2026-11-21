@@ -39,11 +39,18 @@ if str(_REPO_ROOT) not in sys.path:
 # Local package imports follow path bootstrap (Streamlit script entry).
 # pylint: disable=wrong-import-position
 from app.adapt_session_ui import (
+    SESSION_ADAPT_KEY,
+    SESSION_FEATURES_KEY,
+    SESSION_RESULT_DIGEST_KEY,
+    SESSION_RESULT_KEY,
     AdaptRunRequest,
     BoundAdaptSession,
     caps_display_from_config,
+    content_digest_from_bytes,
+    impute_result_is_current,
     make_upload_fingerprint,
     prepare_adapt_windows,
+    reset_session_binding,
     run_ui_adapt,
 )
 from app.demo_eval_smoke import DemoEvalSmokeRequest, run_demo_eval_smoke
@@ -106,11 +113,14 @@ _UCI_BEIJING_URL = (
     "beijing+multi+site+air+quality+data"
 )
 _PRSA_ZIP_NAME = "PRSA2017_Data_20130301-20170228.zip"
-_SESSION_RESULT_KEY = "m4_impute_result"
-_SESSION_FEATURES_KEY = "m4_feature_names"
-_SESSION_ADAPT_KEY = "m7_bound_adapt"
+_SESSION_RESULT_KEY = SESSION_RESULT_KEY
+_SESSION_FEATURES_KEY = SESSION_FEATURES_KEY
+_SESSION_ADAPT_KEY = SESSION_ADAPT_KEY
+_SESSION_RESULT_DIGEST_KEY = SESSION_RESULT_DIGEST_KEY
+_SESSION_UPLOAD_DIGEST_KEY = "m7_upload_content_digest"
 _MODE_SCRATCH = "scratch"
 _MIN_SEQ_LEN = 2
+_DIGEST_DISPLAY_LEN = 8
 
 
 @st.cache_resource
@@ -168,6 +178,7 @@ def _clear_impute_session_keys() -> None:
     """Drop prior impute chart / download session state."""
     st.session_state.pop(_SESSION_RESULT_KEY, None)
     st.session_state.pop(_SESSION_FEATURES_KEY, None)
+    st.session_state.pop(_SESSION_RESULT_DIGEST_KEY, None)
 
 
 def _resolve_bound_session(fingerprint: str) -> BoundAdaptSession | None:
@@ -186,13 +197,10 @@ def _resolve_bound_session(fingerprint: str) -> BoundAdaptSession | None:
     bound = st.session_state.get(_SESSION_ADAPT_KEY)
     if bound is None:
         return None
-    if not isinstance(bound, BoundAdaptSession):
-        st.session_state.pop(_SESSION_ADAPT_KEY, None)
-        _clear_impute_session_keys()
-        return None
-    if not bound.matches(fingerprint):
-        st.session_state.pop(_SESSION_ADAPT_KEY, None)
-        _clear_impute_session_keys()
+    if not isinstance(bound, BoundAdaptSession) or not bound.matches(
+            fingerprint
+    ):
+        reset_session_binding(st.session_state)
         return None
     return bound
 
@@ -296,7 +304,9 @@ def _render_sidebar(config: AppM4Config) -> UiSidebarState:
     )
 
 
-def _load_payload(config: AppM4Config) -> UiSessionPayload | None:
+def _load_payload(
+        config: AppM4Config,
+) -> tuple[UiSessionPayload | None, str | None]:
     """Resolve bundled sample or upload into validated preview state.
 
     Parameters
@@ -306,8 +316,10 @@ def _load_payload(config: AppM4Config) -> UiSessionPayload | None:
 
     Returns
     -------
-    UiSessionPayload or None
+    payload : UiSessionPayload or None
         Loaded payload, or ``None`` when upload is missing.
+    content_digest : str or None
+        SHA-256 of the loaded bytes, or ``None`` when no payload.
     """
     st.subheader("Your data")
     source = st.radio(
@@ -320,7 +332,9 @@ def _load_payload(config: AppM4Config) -> UiSessionPayload | None:
     return _load_upload_payload(config)
 
 
-def _load_bundled_payload(config: AppM4Config) -> UiSessionPayload | None:
+def _load_bundled_payload(
+        config: AppM4Config,
+) -> tuple[UiSessionPayload | None, str | None]:
     """Load the bundled Beijing sample (Exact pretrained path).
 
     Parameters
@@ -330,23 +344,31 @@ def _load_bundled_payload(config: AppM4Config) -> UiSessionPayload | None:
 
     Returns
     -------
-    UiSessionPayload or None
+    payload : UiSessionPayload or None
         Payload, or ``None`` if the sample file is missing.
+    content_digest : str or None
+        SHA-256 of sample file bytes when loaded.
     """
     st.caption(
         "Sample matches the Beijing air-quality schema this demo was "
         "trained on (known-good pretrained path)."
     )
-    payload = build_bundled_payload(config)
-    if payload is None:
+    if not config.paths.sample_csv.is_file():
         st.error(
             "Sample file is missing. Expected "
             f"{config.paths.sample_csv}."
         )
-    return payload
+        return None, None
+    raw = config.paths.sample_csv.read_bytes()
+    payload = build_bundled_payload(config)
+    if payload is None:
+        return None, None
+    return payload, content_digest_from_bytes(raw)
 
 
-def _load_upload_payload(config: AppM4Config) -> UiSessionPayload | None:
+def _load_upload_payload(
+        config: AppM4Config,
+) -> tuple[UiSessionPayload | None, str | None]:
     """Load an uploaded CSV with Exact / Flexible auto-detect.
 
     Parameters
@@ -356,8 +378,10 @@ def _load_upload_payload(config: AppM4Config) -> UiSessionPayload | None:
 
     Returns
     -------
-    UiSessionPayload or None
+    payload : UiSessionPayload or None
         Payload, or ``None`` when no file is uploaded yet.
+    content_digest : str or None
+        SHA-256 of upload bytes when loaded.
     """
     _render_upload_guidance(config)
     uploaded = st.file_uploader(
@@ -374,12 +398,10 @@ def _load_upload_payload(config: AppM4Config) -> UiSessionPayload | None:
             "Upload a CSV, or switch to the sample dataset for a "
             "known-good Beijing demo."
         )
-        return None
-    return build_upload_payload_from_bytes(
-        uploaded.getvalue(),
-        uploaded.name,
-        config,
-    )
+        return None, None
+    raw = uploaded.getvalue()
+    payload = build_upload_payload_from_bytes(raw, uploaded.name, config)
+    return payload, content_digest_from_bytes(raw)
 
 
 def _render_upload_guidance(config: AppM4Config) -> None:
@@ -667,6 +689,8 @@ def _run_adapt_button(
     config : AdaptM7Config
         Effective smoke-cap config.
     """
+    # Clear first so any crash / uncaught error cannot leave a stale bind.
+    reset_session_binding(st.session_state)
     windows, adapt_error = prepare_adapt_windows(
         payload.frame,
         int(config.geometry.seq_len),
@@ -676,7 +700,8 @@ def _run_adapt_button(
         detail = adapt_error or "window adapt failed"
         st.error(
             f"**Too little data for adapt**\n\n{detail} "
-            "Lower seq_len in Advanced smoke knobs or upload a longer series."
+            "Lower seq_len in Advanced smoke knobs or upload a longer "
+            "series. No session model is bound."
         )
         return
     with st.spinner(
@@ -692,7 +717,10 @@ def _run_adapt_button(
             )
         )
     if not outcome.ok() or outcome.session is None:
-        st.error(outcome.failure_markdown())
+        st.error(
+            outcome.failure_markdown()
+            + "\n\nNo session model is bound."
+        )
         return
     st.session_state[_SESSION_ADAPT_KEY] = outcome.session
     _clear_impute_session_keys()
@@ -743,6 +771,18 @@ def _adapt_panel_body(
     return _resolve_bound_session(fingerprint)
 
 
+def _show_bound_adapt_info(bound: BoundAdaptSession | None) -> None:
+    """Show bind status after the Run adapt control has been handled.
+
+    Parameters
+    ----------
+    bound : BoundAdaptSession or None
+        Current fingerprint-matching bind, if any.
+    """
+    if bound is not None:
+        st.info(bound.describe())
+
+
 def _render_adapt_panel(
         payload: UiSessionPayload,
         fingerprint: str,
@@ -772,18 +812,19 @@ def _render_adapt_panel(
         "Artifacts go under ``artifacts/m7/`` — never overwrites Beijing "
         "M2 claim weights. File-local only; not universal SOTA."
     )
-    bound = _resolve_bound_session(fingerprint)
-    if bound is not None:
-        st.info(bound.describe())
     if payload.ingest_mode == MODE_EXACT_BEIJING:
         with st.expander(
                 "Optional: adapt instead of pretrained",
                 expanded=False,
         ):
-            return _adapt_panel_body(payload, fingerprint, base_config)
+            bound = _adapt_panel_body(payload, fingerprint, base_config)
+        _show_bound_adapt_info(bound)
+        return bound
     if payload.ingest_mode == MODE_FLEXIBLE:
-        return _adapt_panel_body(payload, fingerprint, base_config)
-    return bound
+        bound = _adapt_panel_body(payload, fingerprint, base_config)
+        _show_bound_adapt_info(bound)
+        return bound
+    return _resolve_bound_session(fingerprint)
 
 
 def _render_impute_section(context: ImputeSectionContext) -> None:
@@ -796,6 +837,9 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
     """
     payload = context.payload
     windows = context.active_windows()
+    content_digest = str(
+        st.session_state.get(_SESSION_UPLOAD_DIGEST_KEY, "")
+    )
     if not payload.impute_gate.is_allowed() or windows is None:
         _clear_impute_session_keys()
         st.warning(payload.impute_gate.reason)
@@ -805,6 +849,13 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
         ):
             st.info("Run adapt above to unlock impute for this schema.")
         return
+    model_ref = (
+        context.bound_session.run_id
+        if context.bound_session is not None
+        else "pretrained"
+    )
+    short_digest = content_digest[:_DIGEST_DISPLAY_LEN]
+    st.caption(f"Fill uses: {model_ref} · data {short_digest}")
     if st.button("Fill missing values", type="primary"):
         with st.spinner("Filling gaps… this can take a few minutes on CPU."):
             result = context.active_imputer().impute(
@@ -815,6 +866,13 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
             )
         st.session_state[_SESSION_RESULT_KEY] = result
         st.session_state[_SESSION_FEATURES_KEY] = windows.feature_names
+        st.session_state[_SESSION_RESULT_DIGEST_KEY] = content_digest
+    if not impute_result_is_current(
+            st.session_state.get(_SESSION_RESULT_DIGEST_KEY),
+            content_digest,
+    ):
+        _clear_impute_session_keys()
+        return
     result = st.session_state.get(_SESSION_RESULT_KEY)
     feature_names = st.session_state.get(_SESSION_FEATURES_KEY)
     if result is not None and feature_names is not None:
@@ -852,20 +910,25 @@ def main() -> None:
     _render_about_this_model(config)
     sidebar = _render_sidebar(config)
     try:
-        payload = _load_payload(config)
+        payload, content_digest = _load_payload(config)
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
         return
-    if payload is None:
+    if payload is None or content_digest is None:
         st.stop()
         return
-    _render_preview_panel(payload)
+    prev_digest = st.session_state.get(_SESSION_UPLOAD_DIGEST_KEY)
+    if prev_digest is not None and prev_digest != content_digest:
+        reset_session_binding(st.session_state)
+    st.session_state[_SESSION_UPLOAD_DIGEST_KEY] = content_digest
     fingerprint = make_upload_fingerprint(
         payload.source_label,
         payload.ingest_mode,
         payload.frame.feature_names,
+        content_digest,
     )
+    _render_preview_panel(payload)
     bound = _render_adapt_panel(payload, fingerprint)
     session_features = None if bound is None else bound.feature_names
     payload = refresh_impute_gate(

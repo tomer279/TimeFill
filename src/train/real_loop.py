@@ -757,6 +757,8 @@ def _assert_not_frozen_artifact_dir(paths: ArtifactPaths) -> None:
 def _assert_wp0_consumable(config: RealM2Config) -> None:
     """Raise if YAML asks for M7.5 flags that training does not yet consume.
 
+    Also builds DSM settings so invalid loss combos fail before artifact wipe.
+
     Parameters
     ----------
     config : RealM2Config
@@ -766,6 +768,8 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
     ------
     NotImplementedError
         Naming each non-legacy unused setting.
+    ValueError
+        From ``DSMLossSettings.validate`` (e.g. clean + nonzero obs weight).
     """
     protocol = config.train.protocol
     sample = config.sample
@@ -774,7 +778,6 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
     # (condition_is_bad, flag_name) — loop keeps branch count down.
     checks: tuple[tuple[bool, str], ...] = (
         (protocol.parameterization != "score", "train.parameterization"),
-        (protocol.observed_input != "noised", "train.observed_input"),
         (protocol.ema_decay is not None, "train.ema_decay"),
         (protocol.lr_schedule != "constant", "train.lr_schedule"),
         (protocol.select_by != "val_dsm_loss", "train.select_by"),
@@ -786,6 +789,7 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
         (sample.t_eps is not None, "sample.t_eps"),
         (sample.diffusion_impl != "dense", "sample.diffusion_impl"),
         (sample.point_estimate != "mean", "sample.point_estimate"),
+        # Until WP7/WP-B4 wire replace_noised through val/bench/app.
         (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
         (bool(transform.log1p_features), "data.transform.log1p_features"),
         (transform.clip_nonnegative, "data.transform.clip_nonnegative"),
@@ -799,6 +803,7 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
         raise NotImplementedError(
             "M7.5 flags not wired yet: " + ", ".join(bad)
         )
+    dsm_settings_from_real_config(config)
 
 
 def _build_m2_trainer(

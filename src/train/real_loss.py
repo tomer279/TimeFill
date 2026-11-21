@@ -27,6 +27,7 @@ from src.sde.vp_sde import VPSDE
 from src.train.loss import (
     DSMLossSettings,
     _DsmKeyPack,
+    _OBSERVED_INPUT_CLEAN,
     _weighted_mean_square,
 )
 
@@ -161,6 +162,8 @@ class RealConditionalDSMLoss:
         time = self._sample_time(keys.time, batch.batch_size())
         eps = jax.random.normal(keys.eps, batch.x0.shape, dtype=jnp.float32)
         y_t = self.sde.forward_sample(batch.x0, time, eps)
+        if self.settings.observed_input == _OBSERVED_INPUT_CLEAN:
+            y_t = m_train * x_obs + (1.0 - m_train) * y_t
         pred = model(y_t, time, m_train, x_obs)
         target = self._score_target(eps, batch.x0, time)
         weights = self.reduction_weights(batch.m_native, m_art, m_train)
@@ -260,6 +263,7 @@ class RealConditionalDSMLoss:
             obs_loss_weight=self.settings.obs_loss_weight,
             mask_mode=self.settings.mask_mode,
             std_floor=self.settings.std_floor,
+            observed_input=self.settings.observed_input,
         )
         return RealConditionalDSMLoss(self.sde, settings)
 
@@ -332,6 +336,7 @@ def dsm_settings_from_real_config(config: RealM2Config) -> DSMLossSettings:
         t_eps=config.train.protocol.t_eps,
         obs_loss_weight=config.train.protocol.obs_loss_weight,
         mask_mode=config.train.protocol.mask_mode,
+        observed_input=config.train.protocol.observed_input,
     )
     settings.validate()
     return settings

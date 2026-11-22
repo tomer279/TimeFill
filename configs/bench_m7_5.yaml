@@ -30,6 +30,8 @@ protocols:
 sample:
   K_samples: 50
   solver_steps: 100
+  diffusion_impl: diagonal
+  point_estimate: median
 
 seeds:
   mask: [0, 1, 2]

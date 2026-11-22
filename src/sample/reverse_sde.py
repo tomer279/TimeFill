@@ -3,7 +3,7 @@
 Classes
 -------
 ImputeSolverSettings
-    Solver steps, terminal ``t_eps``, quantile levels, noise-init mode.
+    Solver steps, ``t_eps``, quantiles, noise-init, observed mode, diffusion impl.
 ImputeContext
     Score model + ``VPSDE`` + solver settings for reverse imputation.
 ImputeQuery
@@ -32,6 +32,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax
 from diffrax import (
     ControlTerm,
     Euler,
@@ -69,6 +70,12 @@ _OBSERVED_MODE_REPLACE_NOISED = "replace_noised"
 _ALLOWED_OBSERVED_MODE = frozenset(
     {_OBSERVED_MODE_FROZEN_CLEAN, _OBSERVED_MODE_REPLACE_NOISED}
 )
+_DEFAULT_DIFFUSION_IMPL = "dense"
+_DIFFUSION_IMPL_DENSE = "dense"
+_DIFFUSION_IMPL_DIAGONAL = "diagonal"
+_ALLOWED_DIFFUSION_IMPL = frozenset(
+    {_DIFFUSION_IMPL_DENSE, _DIFFUSION_IMPL_DIAGONAL}
+)
 _TIME_KEY_SCALE = 10_000
 _BM_TOL_FRACTION = 0.5
 _MAX_STEP_SLACK = 2
@@ -103,6 +110,8 @@ class ImputeSolverSettings:
         ``missing_only`` (default) or ``full`` — see ASSUMPTIONS.md.
     observed_mode : str
         ``frozen_clean`` (legacy) or ``replace_noised``.
+    diffusion_impl : str
+        ``dense`` (legacy ``jnp.diag``) or ``diagonal`` (lineax).
     """
 
     solver_steps: int
@@ -111,6 +120,7 @@ class ImputeSolverSettings:
     quantile_high: float = _DEFAULT_QUANTILE_HIGH
     noise_init: str = _DEFAULT_NOISE_INIT
     observed_mode: str = _DEFAULT_OBSERVED_MODE
+    diffusion_impl: str = _DEFAULT_DIFFUSION_IMPL
 
     def validate(self) -> None:
         """Raise ``ValueError`` if solver settings are invalid."""
@@ -136,6 +146,12 @@ class ImputeSolverSettings:
                 f"{sorted(_ALLOWED_OBSERVED_MODE)}, "
                 f"got {self.observed_mode!r}"
             )
+        if self.diffusion_impl not in _ALLOWED_DIFFUSION_IMPL:
+            raise ValueError(
+                "diffusion_impl must be one of "
+                f"{sorted(_ALLOWED_DIFFUSION_IMPL)}, "
+                f"got {self.diffusion_impl!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/YAML-serializable dict of fields.
@@ -152,6 +168,7 @@ class ImputeSolverSettings:
             "quantile_high": self.quantile_high,
             "noise_init": self.noise_init,
             "observed_mode": self.observed_mode,
+            "diffusion_impl": self.diffusion_impl,
         }
 
 
@@ -610,6 +627,7 @@ def _impute_context_from_config(
         solver_steps=int(sample.solver_steps),
         t_eps=resolve_sample_t_eps(sample.t_eps, protocol.t_eps),
         observed_mode=str(sample.observed_mode),
+        diffusion_impl=str(sample.diffusion_impl),
     )
     context = ImputeContext(
         model=as_score_model(model, sde, protocol.parameterization),
@@ -749,7 +767,10 @@ def _reverse_multiterm(
     )
     terms = MultiTerm(
         ODETerm(_make_drift_fn(model, sde, pack, settings, key_obs)),
-        ControlTerm(_make_diffusion_fn(sde, pack.mask), brownian),
+        ControlTerm(
+            _make_diffusion_fn(sde, pack.mask, settings.diffusion_impl),
+            brownian,
+        ),
     )
     return terms, t0, t1, step_dt
 
@@ -850,11 +871,15 @@ def _make_drift_fn(
     return drift
 
 
-def _make_diffusion_fn(sde: VPSDE, mask: jnp.ndarray):
-    """Build diagonal diffusion ``g(t)`` with zeros on observed cells.
+def _make_diffusion_fn(
+        sde: VPSDE,
+        mask: jnp.ndarray,
+        diffusion_impl: str,
+):
+    """Build diffusion ``g(t)`` with zeros on observed cells.
 
-    Returns a dense diagonal matrix so ``ControlTerm`` applies independent
-    noise per coordinate without requiring the optional ``lineax`` package.
+    ``dense`` (legacy) returns ``jnp.diag``. ``diagonal`` returns a
+    ``lineax.DiagonalLinearOperator`` with the same matvec.
 
     Parameters
     ----------
@@ -862,20 +887,25 @@ def _make_diffusion_fn(sde: VPSDE, mask: jnp.ndarray):
         Provides ``sde_coefficients(t)``.
     mask : jax.Array
         Observation mask ``(T, F)``.
+    diffusion_impl : str
+        ``dense`` or ``diagonal``.
 
     Returns
     -------
     callable
-        Diffrax diffusion ``(tau, y_flat, args) -> (n, n)`` matrix.
+        Diffrax diffusion ``(tau, y_flat, args) -> vf``.
     """
     horizon = sde.t_diff
     missing_flat = (1.0 - mask).reshape((-1,))
+    use_diagonal = diffusion_impl == _DIFFUSION_IMPL_DIAGONAL
 
-    def diffusion(tau: Any, y_flat: Any, _args: Any) -> jnp.ndarray:
+    def diffusion(tau: Any, y_flat: Any, _args: Any):
         del y_flat
         time = horizon - tau
         _drift_coeff, g_t = sde.sde_coefficients(time)
         diagonal = missing_flat * g_t
+        if use_diagonal:
+            return lineax.DiagonalLinearOperator(diagonal)
         return jnp.diag(diagonal)
 
     return diffusion

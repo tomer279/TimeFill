@@ -19,13 +19,17 @@ empirical_crps
     Ensemble CRPS averaged over masked cells.
 interval_coverage
     Fraction of truth inside a central predictive interval.
+write_mean_median_csvs
+    Write raw ``mean.csv`` / ``median.csv`` array dumps (not app export).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import jax.numpy as jnp
+import numpy as np
 
 from src.data.schema import (
     BATCH_AXIS,
@@ -45,6 +49,13 @@ _LEVEL_50 = 0.5
 _LEVEL_90 = 0.9
 _COVERAGE_LEVELS = (_LEVEL_50, _LEVEL_90)
 _EXPECTED_SAMPLE_RANK = 4
+_POINT_ESTIMATE_MEAN = "mean"
+_POINT_ESTIMATE_MEDIAN = "median"
+_ALLOWED_POINT_ESTIMATE = frozenset(
+    {_POINT_ESTIMATE_MEAN, _POINT_ESTIMATE_MEDIAN}
+)
+_MEAN_CSV_NAME = "mean.csv"
+_MEDIAN_CSV_NAME = "median.csv"
 
 
 @dataclass(frozen=True)
@@ -262,21 +273,33 @@ class ImputationEvaluator:
         return "\n".join(lines)
 
 
-def masked_mae(tensors: EvalTensors) -> jnp.ndarray:
-    """Mean absolute error on missing cells using the posterior mean.
+def masked_mae(
+        tensors: EvalTensors,
+        point_estimate: str = _POINT_ESTIMATE_MEAN,
+) -> jnp.ndarray:
+    """Mean absolute error on missing cells.
 
     Parameters
     ----------
     tensors : EvalTensors
-        Must include ``truth``, ``mean``, and ``mask``.
+        Must include ``truth``, ``mean``, ``samples``, and ``mask``.
+    point_estimate : str, optional
+        ``mean`` (legacy) or ``median`` over the sample axis ``K``.
 
     Returns
     -------
     jax.Array
         Scalar MAE over masked entries.
     """
+    if point_estimate not in _ALLOWED_POINT_ESTIMATE:
+        raise ValueError(
+            "point_estimate must be one of "
+            f"{sorted(_ALLOWED_POINT_ESTIMATE)}, "
+            f"got {point_estimate!r}"
+        )
     weights = tensors.missing_weights()
-    abs_err = jnp.abs(tensors.mean - tensors.truth)
+    fill = _point_fill(tensors, point_estimate)
+    abs_err = jnp.abs(fill - tensors.truth)
     return _weighted_mean(abs_err, weights)
 
 
@@ -358,6 +381,58 @@ def interval_coverage(
     high = jnp.quantile(tensors.samples, 1.0 - tail, axis=_SAMPLE_AXIS)
     inside = (tensors.truth >= low) & (tensors.truth <= high)
     return _weighted_mean(inside.astype(jnp.float32), tensors.missing_weights())
+
+
+def write_mean_median_csvs(
+        out_dir: Path,
+        mean: jnp.ndarray,
+        median: jnp.ndarray,
+) -> tuple[Path, Path]:
+    """Write ``mean.csv`` and ``median.csv`` under ``out_dir``.
+
+    Raw array dumps (last axis = features), not the app download format.
+    Prefer ``artifacts/m7_5/…``; do not write into frozen claim dirs.
+
+    Parameters
+    ----------
+    out_dir : pathlib.Path
+        Destination directory (created if needed).
+    mean : jax.Array
+        Posterior mean fill.
+    median : jax.Array
+        Posterior median fill.
+
+    Returns
+    -------
+    mean_path, median_path : pathlib.Path
+        Written file paths.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mean_path = out_dir / _MEAN_CSV_NAME
+    median_path = out_dir / _MEDIAN_CSV_NAME
+    _write_array_csv(mean_path, mean)
+    _write_array_csv(median_path, median)
+    return mean_path, median_path
+
+
+def _point_fill(
+        tensors: EvalTensors,
+        point_estimate: str,
+) -> jnp.ndarray:
+    """Return the configured point fill ``(B, T, F)``."""
+    if point_estimate == _POINT_ESTIMATE_MEDIAN:
+        return jnp.median(tensors.samples, axis=_SAMPLE_AXIS)
+    return tensors.mean
+
+
+def _write_array_csv(path: Path, array: jnp.ndarray) -> None:
+    """Write an array as CSV rows shaped ``(-1, n_features)``."""
+    flat = np.asarray(array, dtype=np.float64)
+    if flat.ndim == 1:
+        rows = flat.reshape(1, -1)
+    else:
+        rows = flat.reshape(-1, flat.shape[-1])
+    np.savetxt(path, rows, delimiter=",")
 
 
 def _weighted_mean(

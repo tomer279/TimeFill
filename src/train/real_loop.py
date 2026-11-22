@@ -789,8 +789,6 @@ def _assert_wp0_consumable(config: RealM2Config) -> None:
         (protocol.warmup_steps != 0, "train.warmup_steps"),
         (config.model != legacy_model, "model.*"),
         (sample.t_eps is not None, "sample.t_eps"),
-        (sample.diffusion_impl != "dense", "sample.diffusion_impl"),
-        (sample.point_estimate != "mean", "sample.point_estimate"),
         # Until WP7/WP-B4 wire replace_noised through val/bench/app.
         (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
         (bool(transform.log1p_features), "data.transform.log1p_features"),
@@ -853,6 +851,7 @@ def _build_m2_trainer(
             t_eps=config.train.protocol.t_eps,
             k_samples=config.extras.snapshot_k_samples,
             solver_steps=config.extras.snapshot_solver_steps,
+            diffusion_impl=str(config.sample.diffusion_impl),
         ).as_hook(),
     )
     bundle.validate()

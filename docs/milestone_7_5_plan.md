@@ -257,6 +257,12 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
 ### WP4 — Training hygiene: EMA, selection by imputation, masks, schedule (findings 4, 9)
 - **EMA:** keep an EMA copy of the model weights (`optax.ema` or a manual
   tree-map); save and evaluate the **EMA** weights.
+- **JIT reuse (WP6 follow-up):** each `impute()` rebuilds drift/diffusion
+  closures, so Diffrax recompiles every call. Val imputation every
+  `val_every` epochs will pay full compile unless you wrap the imputer once
+  (`eqx.filter_jit` on a stable runner, or inside `ReverseSDEImputer`) and
+  reuse it across epochs. Do this before relying on WP6 diagonal for cheap
+  val selection.
 - **Checkpoint selection:** replace "min val DSM loss" with
   `select_by: val_impute_crps` (or `val_impute_mae`):
   - Build a **fixed** val imputation set once (`n_windows` val windows,
@@ -337,6 +343,14 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   - Median path is used for MAE when configured.
 - **Done when:** a timing note (CPU, `K=50`, `steps=100`, one window) is
   recorded in the walkthrough for dense vs diagonal.
+- **Done (2026-11-22):** `diffusion_impl` (lineax diagonal) wired through
+  sampler, val snapshots, and M3 bench; `masked_mae(point_estimate=)`;
+  `write_mean_median_csvs` + `scripts/wp6_timing.py` → `artifacts/m7_5/wp6/`.
+  Decisions: no EM fallback (`lineax` required); app stays dense until WP-B4;
+  config→bench MAE deferred to WP7; WP4 must reuse one jitted imputer (bare
+  `impute()` recompiles). Warm CPU T=64 F=6 K=50 steps=100: dense **0.726s**,
+  diagonal **0.723s**. Commands: `pytest tests/test_wp6_sampler_efficiency.py -q`
+  → **11 passed**; `python scripts/wp6_timing.py`.
 
 ### WP7 — Re-benchmark, ablation, and claim update (finding 15)
 - Train with `real_m7_5.yaml` → `artifacts/m7_5/train/`.
@@ -344,6 +358,9 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   block 8) × 3 mask seeds × 3 sample seeds; report mean ± std. Add a block-16
   protocol as an **extension** row (clearly labelled, not part of the frozen
   M3 grid).
+- **Point estimate (from WP6):** bench / `ImputationEvaluator` must read
+  `sample.point_estimate` and pass it into `masked_mae` so M7.5 tables use
+  median MAE when the config says `median` (RMSE stays on the mean).
 - **Ablation** (fewer seeds and a shorter train budget are fine; document it):
   1. M2 legacy checkpoint (reference)
   2. + WP1 consistency only

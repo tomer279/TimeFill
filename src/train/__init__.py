@@ -91,6 +91,7 @@ from src.train.artifacts import (
 from src.train.loss import (
     ConditionalDSMLoss,
     DSMLossSettings,
+    DsmLossExtras,
     dsm_settings_from_config,
 )
 from src.train.loop import (
@@ -116,6 +117,7 @@ __all__ = [
     "ArtifactPaths",
     "ConditionalDSMLoss",
     "DSMLossSettings",
+    "DsmLossExtras",
     "M1Trainer",
     "M2Trainer",
     "M2TrainerBundle",

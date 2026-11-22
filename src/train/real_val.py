@@ -16,6 +16,7 @@ import jax
 
 from src.data.schema import TIME_AXIS
 from src.eval.plots import ImputationPlotData, save_imputation_bands
+from src.models.score_from_eps import as_score_model
 from src.sample.reverse_sde import (
     ImputeContext,
     ImputeQuery,
@@ -50,6 +51,8 @@ class M2ValHookBundle:
         Diffrax steps for the snapshot.
     diffusion_impl : str
         ``dense`` (legacy) or ``diagonal``.
+    parameterization : str
+        ``score`` (legacy) or ``eps`` (wrap with ``ScoreFromEps``).
     """
 
     sde: VPSDE
@@ -57,6 +60,7 @@ class M2ValHookBundle:
     k_samples: int
     solver_steps: int
     diffusion_impl: str = "dense"
+    parameterization: str = "score"
 
     def as_hook(self) -> Callable[[ValSnapshotPayload], Path]:
         """Return a hook closure bound to this bundle.
@@ -87,9 +91,14 @@ class M2ValHookBundle:
             t_eps=self.t_eps,
             diffusion_impl=self.diffusion_impl,
         )
+        score_model = as_score_model(
+            payload.model,
+            self.sde,
+            self.parameterization,
+        )
         imputer = ReverseSDEImputer(
             ImputeContext(
-                model=payload.model,
+                model=score_model,
                 sde=self.sde,
                 settings=settings,
             )

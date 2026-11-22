@@ -20,7 +20,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from src.data.masking import block_mask, random_mask
+from src.data.masking import BlockMasker, random_mask
 from src.data.schema import (
     MASK_MISSING,
     MASK_OBSERVED,
@@ -50,9 +50,19 @@ class MaskComposer:
         MCAR drop probability on eligible cells.
     block_len : int
         Contiguous block length for block mode.
+    block_len_range : tuple of int or None
+        Optional inclusive length bounds for block mode.
+    max_blocks_per_feature : int
+        Gaps per feature in block mode (union).
     """
 
-    def __init__(self, rate: float, block_len: int) -> None:
+    def __init__(
+            self,
+            rate: float,
+            block_len: int,
+            block_len_range: tuple[int, int] | None = None,
+            max_blocks_per_feature: int = 1,
+    ) -> None:
         """Store artificial-mask hyperparameters.
 
         Parameters
@@ -61,6 +71,10 @@ class MaskComposer:
             MCAR rate in ``[0, 1]``.
         block_len : int
             Positive block length (``<= T`` at apply time).
+        block_len_range : tuple of int or None, optional
+            Inclusive ``(lo, hi)``; ``None`` keeps fixed ``block_len``.
+        max_blocks_per_feature : int, optional
+            Positive gap count per feature (default ``1``).
         """
         if not 0.0 <= rate <= 1.0:
             raise ValueError(f"rate must be in [0, 1], got {rate}")
@@ -68,6 +82,8 @@ class MaskComposer:
             raise ValueError(f"block_len must be positive, got {block_len}")
         self.rate = float(rate)
         self.block_len = int(block_len)
+        self.block_len_range = block_len_range
+        self.max_blocks_per_feature = int(max_blocks_per_feature)
 
     def compose_random(
             self,
@@ -124,7 +140,11 @@ class MaskComposer:
         m_artificial : jax.Array
             Restricted artificial mask (never observes native gaps).
         """
-        _x_ignored, m_art_raw = block_mask(values, self.block_len, key)
+        _x_ignored, m_art_raw = BlockMasker(
+            self.block_len,
+            block_len_range=self.block_len_range,
+            max_blocks_per_feature=self.max_blocks_per_feature,
+        ).apply(key, values)
         return _finalize_composition(values, m_native, m_art_raw)
 
 

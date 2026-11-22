@@ -26,6 +26,7 @@ from src.models.score_net import ConditionalScoreNet
 from src.sde.vp_sde import VPSDE
 from src.train.loss import (
     DSMLossSettings,
+    DsmLossExtras,
     _DsmKeyPack,
     _OBSERVED_INPUT_CLEAN,
     _PARAM_EPS,
@@ -134,7 +135,12 @@ class RealConditionalDSMLoss:
             )
         self.sde = sde
         self.settings = settings
-        self.composer = MaskComposer(settings.mask_rate, settings.block_len)
+        self.composer = MaskComposer(
+            settings.mask_rate,
+            settings.block_len,
+            block_len_range=settings.block_len_range,
+            max_blocks_per_feature=settings.max_blocks_per_feature,
+        )
 
     def __call__(
             self,
@@ -207,7 +213,14 @@ class RealConditionalDSMLoss:
             return self.composer.compose_block(
                 key_block, batch.x0, batch.m_native,
             )
-        use_block = jax.random.uniform(key_pick) < _MIXED_BLOCK_THRESHOLD
+        if self.settings.mixed_select == "per_window":
+            batch_size = int(batch.x0.shape[BATCH_AXIS])
+            use_block = (
+                jax.random.uniform(key_pick, (batch_size, 1, 1))
+                < _MIXED_BLOCK_THRESHOLD
+            )
+        else:
+            use_block = jax.random.uniform(key_pick) < _MIXED_BLOCK_THRESHOLD
         return _blend_compose_results(
             self.composer.compose_random(key_rand, batch.x0, batch.m_native),
             self.composer.compose_block(key_block, batch.x0, batch.m_native),
@@ -267,8 +280,7 @@ class RealConditionalDSMLoss:
             t_eps=self.settings.t_eps,
             obs_loss_weight=self.settings.obs_loss_weight,
             mask_mode=self.settings.mask_mode,
-            observed_input=self.settings.observed_input,
-            parameterization=self.settings.parameterization,
+            extras=self.settings.extras,
         )
         return RealConditionalDSMLoss(self.sde, settings)
 
@@ -335,14 +347,20 @@ def dsm_settings_from_real_config(config: RealM2Config) -> DSMLossSettings:
     DSMLossSettings
         Validated DSM hyperparameters.
     """
+    protocol = config.train.protocol
     settings = DSMLossSettings(
         mask_rate=config.data.mask_rate,
         block_len=config.data.block_len,
-        t_eps=config.train.protocol.t_eps,
-        obs_loss_weight=config.train.protocol.obs_loss_weight,
-        mask_mode=config.train.protocol.mask_mode,
-        observed_input=config.train.protocol.observed_input,
-        parameterization=config.train.protocol.parameterization,
+        t_eps=protocol.t_eps,
+        obs_loss_weight=protocol.obs_loss_weight,
+        mask_mode=protocol.mask_mode,
+        extras=DsmLossExtras(
+            observed_input=protocol.observed_input,
+            parameterization=protocol.parameterization,
+            mixed_select=protocol.mixed_select,
+            block_len_range=protocol.block_len_range,
+            max_blocks_per_feature=protocol.max_blocks_per_feature,
+        ),
     )
     settings.validate()
     return settings

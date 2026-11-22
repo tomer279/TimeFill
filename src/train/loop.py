@@ -636,20 +636,37 @@ class M1Trainer:
 
 
 def build_optimizer(train_cfg: TrainConfig) -> optax.GradientTransformation:
-    """Build AdamW with optional global gradient clipping.
+    """Build AdamW with optional warmup-cosine schedule and grad clip.
 
     Parameters
     ----------
     train_cfg : TrainConfig
-        Provides optimizer ``lr``, ``weight_decay``, and ``grad_clip_norm``.
+        Provides optimizer ``lr``, ``weight_decay``, ``grad_clip_norm``,
+        and protocol ``lr_schedule`` / ``warmup_steps``.
 
     Returns
     -------
     optax.GradientTransformation
         Optax optimizer chain.
     """
+    peak_lr = train_cfg.optimizer.lr
+    if train_cfg.protocol.lr_schedule == "warmup_cosine":
+        total_steps = max(
+            train_cfg.schedule.epochs * train_cfg.schedule.steps_per_epoch,
+            1,
+        )
+        # Warmup then cosine to 10% of peak (not zero).
+        learning_rate = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=peak_lr,
+            warmup_steps=train_cfg.protocol.warmup_steps,
+            decay_steps=total_steps,
+            end_value=0.1 * peak_lr,
+        )
+    else:
+        learning_rate = peak_lr
     adam = optax.adamw(
-        train_cfg.optimizer.lr,
+        learning_rate,
         weight_decay=train_cfg.optimizer.weight_decay,
     )
     if train_cfg.optimizer.grad_clip_norm > _GRAD_NORM_EPS:

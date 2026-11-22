@@ -10,45 +10,53 @@ RealBatchPool
     Re-exported from ``src.train.real_pool``.
 M2ValHookBundle
     Re-exported from ``src.train.real_val``.
+FixedValImputeSet
+    Re-exported from ``src.train.real_val_select``.
 
 Functions
 ---------
 run_m2_training
-    Load processed windows, fit scaler, train, write ``artifacts/m2/``.
+    Load processed windows, fit scaler, train, write artifacts.
 run_mask_rate_sensitivity
     Optional DSM val-loss smoke at several artificial mask rates.
 build_real_train_step
-    Jitted AdamW step closed over ``RealConditionalDSMLoss``.
+    Re-exported from ``src.train.real_setup``.
+build_fixed_val_impute_set
+    Re-exported from ``src.train.real_val_select``.
+init_ema
+    Re-exported from ``src.train.real_val_select``.
+update_ema
+    Re-exported from ``src.train.real_val_select``.
 load_normalized_pool
     Re-exported from ``src.train.real_pool``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 
-from src.data.normalize import resolve_scaler_path
-from src.data.real import load_processed_dataset
 from src.data.real_config import RealM2Config, load_real_m2_config
-from src.eval.split_pin import build_split_manifest, write_split_manifest
+from src.data.schema import TIME_AXIS
 from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
 )
+from src.sample.reverse_sde import ImputeSolverSettings, resolve_sample_t_eps
 from src.sde.vp_sde import VPSDE
 from src.train.artifacts import (
     ArtifactPaths,
     TrainHistory,
     ValSnapshotPayload,
-    resolve_artifact_paths,
     save_checkpoint,
+    write_train_meta,
 )
 from src.train.loop import build_optimizer
 from src.train.real_loss import (
@@ -57,26 +65,54 @@ from src.train.real_loss import (
     dsm_settings_from_real_config,
 )
 from src.train.real_pool import RealBatchPool, load_normalized_pool
+from src.train.real_setup import (
+    assert_not_frozen_artifact_dir as _assert_not_frozen_artifact_dir,
+    assert_wp0_consumable as _assert_wp0_consumable,
+    build_real_train_step,
+    prepare_artifacts_and_pool as _prepare_artifacts_and_pool,
+)
 from src.train.real_val import M2ValHookBundle
+from src.train.real_val_select import (
+    SELECT_CRPS,
+    SELECT_DSM,
+    SELECT_MAE,
+    FixedValImputeSet,
+    ValImputeBundle,
+    build_fixed_val_impute_set,
+    init_ema,
+    make_val_impute_runner,
+    score_val_impute,
+    update_ema,
+)
 
 _NAN_MSG = "non-finite train loss detected; aborting"
 _VAL_MC_DRAWS = 4
 _LOSS_PLOT_TITLE = "M2 conditional DSM (real windows)"
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_FROZEN_ARTIFACT_DIRS = ("artifacts/m2", "artifacts/m3", "artifacts/m7")
+_DEFAULT_VAL_IMPUTE = {
+    "n_windows": 64,
+    "K_samples": 8,
+    "solver_steps": 50,
+    "mask_seed": 0,
+    "sample_seed": 1,
+    "protocols": ("mcar_0.3", "block_8"),
+}
+_GRAD_NORM_EPS = 1.0e-12
 
 __all__ = [
+    "FixedValImputeSet",
     "M2Trainer",
     "M2TrainerBundle",
     "M2ValHookBundle",
     "RealBatchPool",
+    "build_fixed_val_impute_set",
     "build_real_train_step",
+    "init_ema",
     "load_normalized_pool",
     "run_m2_training",
     "run_m2_training_from_config",
     "run_mask_rate_sensitivity",
+    "update_ema",
 ]
-
 
 @dataclass(frozen=True)
 class M2TrainerBundle:
@@ -135,12 +171,12 @@ class M2TrainerBundle:
 
 @dataclass
 class _StepTotals:
-    """Running sums of train loss and grad norm within an epoch.
+    """Running sums of train loss / grad norm / clip hits within an epoch.
 
     Public methods
     --------------
     add
-        Accumulate one step's loss and grad norm.
+        Accumulate one step's loss, grad norm, and clip flag.
     means
         Return mean loss and mean grad norm over ``n_steps``.
 
@@ -150,12 +186,23 @@ class _StepTotals:
         Sum of per-step losses.
     grad_sum : float
         Sum of per-step grad norms.
+    n_clipped : int
+        Steps whose pre-clip grad norm exceeded the clip threshold.
+    grad_norms : list of float
+        Per-step grad norms (for median across the run).
     """
 
     loss_sum: float = 0.0
     grad_sum: float = 0.0
+    n_clipped: int = 0
+    grad_norms: list[float] = field(default_factory=list)
 
-    def add(self, loss: float, grad_norm: float) -> None:
+    def add(
+            self,
+            loss: float,
+            grad_norm: float,
+            clipped: bool,
+    ) -> None:
         """Accumulate one step's metrics.
 
         Parameters
@@ -164,9 +211,14 @@ class _StepTotals:
             Scalar train loss for the step.
         grad_norm : float
             Global grad norm for the step.
+        clipped : bool
+            Whether the step exceeded the clip threshold.
         """
         self.loss_sum += loss
         self.grad_sum += grad_norm
+        self.grad_norms.append(grad_norm)
+        if clipped:
+            self.n_clipped += 1
 
     def means(self, n_steps: int) -> tuple[float, float]:
         """Return mean loss and mean grad norm.
@@ -311,8 +363,8 @@ class _M2LoopState:
     --------------
     take_epoch_key
         Split and return the next epoch PRNG key.
-    update_after_epoch
-        Store model/opt state, append history, track best val.
+    store_epoch
+        Store model/opt/EMA and append history (no selection).
 
     Instance variables
     ------------------
@@ -328,6 +380,8 @@ class _M2LoopState:
         History and best-val bookkeeping.
     step_fn : callable
         Jitted train step.
+    ema_model : ConditionalScoreNet or None
+        EMA weights when ``ema_decay`` is set.
     """
 
     model: ConditionalScoreNet
@@ -336,6 +390,7 @@ class _M2LoopState:
     val_batch: RealDSMBatch
     tracker: _M2BestTracker
     step_fn: Callable
+    ema_model: ConditionalScoreNet | None = None
 
     def take_epoch_key(self) -> jax.Array:
         """Split ``key_loop`` and return the next epoch key.
@@ -348,13 +403,14 @@ class _M2LoopState:
         self.key_loop, key_epoch = jax.random.split(self.key_loop)
         return key_epoch
 
-    def update_after_epoch(
+    def store_epoch(
             self,
             model: ConditionalScoreNet,
             opt_state: optax.OptState,
             row: Mapping[str, Any],
-    ) -> bool:
-        """Apply one epoch's outputs to this loop state.
+            ema_model: ConditionalScoreNet | None,
+    ) -> None:
+        """Store updated weights and append the epoch metrics row.
 
         Parameters
         ----------
@@ -364,16 +420,19 @@ class _M2LoopState:
             Updated optimizer state.
         row : mapping of str to Any
             Epoch metrics including ``val_loss``.
-
-        Returns
-        -------
-        bool
-            ``True`` if ``val_loss`` improved on the tracked best.
+        ema_model : ConditionalScoreNet or None
+            Updated EMA weights (or ``None``).
         """
         self.model = model
         self.opt_state = opt_state
+        self.ema_model = ema_model
         self.tracker.append_row(row)
-        return self.tracker.consider(model, float(row["val_loss"]))
+
+    def eval_model(self) -> ConditionalScoreNet:
+        """Return EMA weights when present, else the raw model."""
+        if self.ema_model is None:
+            return self.model
+        return self.ema_model
 
 
 class M2Trainer:
@@ -437,25 +496,57 @@ class M2Trainer:
         """
         self.paths.ensure()
         state = self._init_loop_state(key)
-        schedule = self.config.train.schedule
-        for epoch in range(1, schedule.epochs + 1):
-            model, opt_state, row = self._run_epoch(
+        hygiene = _GradHygiene()
+        # None = no selection epoch wrote a best ckpt (not "epoch 0").
+        selected_epoch: int | None = None
+        impute_bundle = self._maybe_build_impute_bundle()
+        for epoch in range(1, self.config.train.schedule.epochs + 1):
+            model, opt_state, ema_model, row, step_totals = self._run_epoch(
                 state,
                 state.take_epoch_key(),
                 epoch,
             )
-            if state.update_after_epoch(model, opt_state, row):
+            hygiene.absorb(step_totals)
+            state.store_epoch(model, opt_state, row, ema_model)
+            if self._maybe_select(
+                    state,
+                    epoch,
+                    self.config.train.protocol.select_by,
+                    impute_bundle,
+            ):
+                selected_epoch = epoch
                 save_checkpoint(
                     self.paths.best_checkpoint(),
                     state.tracker.best_model,
                 )
-            if epoch % schedule.val_every == 0:
-                self._fire_val_hook(state.model, state.val_batch, epoch)
+            # shortcut: skip PNG when impute select already reverse-SDEs;
+            # upgrade: cheap PNG path or ASSUMPTIONS note (see WP4 hygiene).
+            if (
+                    epoch % self.config.train.schedule.val_every == 0
+                    and impute_bundle is None
+            ):
+                self._fire_val_hook(state.eval_model(), state.val_batch, epoch)
 
+        if selected_epoch is None:
+            # No consider() ran: overwrite any stale ckpt with final eval weights.
+            state.tracker.best_model = state.eval_model()
+            save_checkpoint(
+                self.paths.best_checkpoint(),
+                state.tracker.best_model,
+            )
         state.tracker.history.save_csv(self.paths.loss_csv())
         state.tracker.history.save_plot(
             self.paths.loss_png(),
             title=_LOSS_PLOT_TITLE,
+        )
+        write_train_meta(
+            self.paths.root,
+            _train_meta_payload(
+                self.config,
+                state.tracker.best_model,
+                hygiene,
+                selected_epoch,
+            ),
         )
         self.model = state.tracker.best_model
         return state.tracker.best_model, state.tracker.history
@@ -503,11 +594,12 @@ class M2Trainer:
         """
         key_loop, _key_unused = jax.random.split(key)
         model = self.model
+        decay = self.config.train.protocol.ema_decay
         val_batch = self.pool.fixed_val_batch(self.config.data.batch_size)
         tracker = _M2BestTracker(
             history=TrainHistory(),
             best_val=float("inf"),
-            best_model=model,
+            best_model=init_ema(model) if decay is not None else model,
         )
         return _M2LoopState(
             model=model,
@@ -516,6 +608,7 @@ class M2Trainer:
             val_batch=val_batch,
             tracker=tracker,
             step_fn=build_real_train_step(self.optimizer, self.loss_fn),
+            ema_model=init_ema(model) if decay is not None else None,
         )
 
     def _run_epoch(
@@ -523,35 +616,24 @@ class M2Trainer:
             state: _M2LoopState,
             key_epoch: jax.Array,
             epoch: int,
-    ) -> tuple[ConditionalScoreNet, optax.OptState, dict[str, Any]]:
-        """Execute one epoch of train steps and one val evaluation.
-
-        Parameters
-        ----------
-        state : _M2LoopState
-            Loop state at epoch start.
-        key_epoch : jax.Array
-            Epoch PRNG key.
-        epoch : int
-            1-based epoch index.
-
-        Returns
-        -------
-        model : ConditionalScoreNet
-            Updated model.
-        opt_state : optax.OptState
-            Updated optimizer state.
-        row : dict of str to Any
-            Epoch metrics for logging.
-        """
+    ) -> tuple[
+        ConditionalScoreNet,
+        optax.OptState,
+        ConditionalScoreNet | None,
+        dict[str, Any],
+        _StepTotals,
+    ]:
+        """Execute one epoch of train steps and one val DSM evaluation."""
         n_steps = int(self.config.train.schedule.steps_per_epoch)
         key_pack = _M2EpochKeyPack.split_from(key_epoch, n_steps)
-        model, opt_state, train_loss, grad_mean = self._accumulate_steps(
+        model, opt_state, ema_model, totals = self._accumulate_steps(
             state,
             key_pack,
         )
+        train_loss, grad_mean = totals.means(n_steps)
+        eval_model = ema_model if ema_model is not None else model
         val_loss = float(
-            self.evaluate(model, state.val_batch, key_pack.key_val)
+            self.evaluate(eval_model, state.val_batch, key_pack.key_val)
         )
         row = {
             "epoch": epoch,
@@ -564,42 +646,29 @@ class M2Trainer:
                 f"epoch={epoch} train_loss={train_loss:.6f} "
                 f"val_loss={val_loss:.6f} grad_norm={grad_mean:.6f}"
             )
-        return model, opt_state, row
+        return model, opt_state, ema_model, row, totals
 
     def _accumulate_steps(
             self,
             state: _M2LoopState,
             key_pack: _M2EpochKeyPack,
-    ) -> tuple[ConditionalScoreNet, optax.OptState, float, float]:
-        """Run all mini-batch updates for one epoch.
-
-        Parameters
-        ----------
-        state : _M2LoopState
-            Epoch start model / optimizer state.
-        key_pack : _M2EpochKeyPack
-            Per-step train and data PRNG keys.
-
-        Returns
-        -------
-        model : ConditionalScoreNet
-            Updated model.
-        opt_state : optax.OptState
-            Updated optimizer state.
-        train_loss : float
-            Mean train loss over steps.
-        grad_mean : float
-            Mean grad norm over steps.
-        """
-        n_steps = key_pack.n_train_steps()
+    ) -> tuple[
+        ConditionalScoreNet,
+        optax.OptState,
+        ConditionalScoreNet | None,
+        _StepTotals,
+    ]:
+        """Run all mini-batch updates for one epoch."""
         model = state.model
         opt_state = state.opt_state
+        ema_model = state.ema_model
+        decay = self.config.train.protocol.ema_decay
+        clip_norm = float(self.config.train.optimizer.grad_clip_norm)
         totals = _StepTotals()
-        batch_size = self.config.data.batch_size
-        for step_idx in range(n_steps):
+        for step_idx in range(key_pack.n_train_steps()):
             batch = self.pool.sample_train(
                 key_pack.data_keys[step_idx],
-                batch_size,
+                self.config.data.batch_size,
             )
             model, opt_state, loss, grad_norm = state.step_fn(
                 model,
@@ -609,8 +678,78 @@ class M2Trainer:
             )
             if not jnp.isfinite(loss):
                 raise RuntimeError(_NAN_MSG)
-            totals.add(float(loss), float(grad_norm))
-        return model, opt_state, *totals.means(n_steps)
+            grad_value = float(grad_norm)
+            totals.add(
+                float(loss),
+                grad_value,
+                grad_value > clip_norm > _GRAD_NORM_EPS,
+            )
+            if decay is not None and ema_model is not None:
+                ema_model = update_ema(ema_model, model, decay)
+        return model, opt_state, ema_model, totals
+
+    def _maybe_build_impute_bundle(self) -> ValImputeBundle | None:
+        """Build fixed val-impute set + jitted runner when selecting by impute."""
+        protocol = self.config.train.protocol
+        if protocol.select_by not in (SELECT_CRPS, SELECT_MAE):
+            return None
+        spec = dict(protocol.val_impute or _DEFAULT_VAL_IMPUTE)
+        if "protocols" in spec:
+            spec["protocols"] = tuple(spec["protocols"])
+        fixed = build_fixed_val_impute_set(
+            self.pool.val_values,
+            self.pool.val_masks,
+            spec,
+        )
+        values = self.pool.val_values[np.asarray(fixed.window_indices)]
+        native = self.pool.val_masks[np.asarray(fixed.window_indices)]
+        sample_t_eps = resolve_sample_t_eps(
+            self.config.sample.t_eps,
+            protocol.t_eps,
+        )
+        settings = ImputeSolverSettings(
+            solver_steps=int(spec["solver_steps"]),
+            t_eps=sample_t_eps,
+            diffusion_impl=str(self.config.sample.diffusion_impl),
+        )
+        runner = make_val_impute_runner(
+            self.loss_fn.sde,
+            settings,
+            int(values.shape[TIME_AXIS]),
+            int(spec["K_samples"]),
+            protocol.parameterization,
+        )
+        return ValImputeBundle(
+            fixed=fixed,
+            values=values,
+            m_native=native,
+            runner=runner,
+            select_by=protocol.select_by,
+        )
+
+    def _maybe_select(
+            self,
+            state: _M2LoopState,
+            epoch: int,
+            select_by: str,
+            impute_bundle: ValImputeBundle | None,
+    ) -> bool:
+        """Update best checkpoint from DSM or val-impute score."""
+        eval_model = state.eval_model()
+        if select_by == SELECT_DSM:
+            return state.tracker.consider(
+                eval_model,
+                float(state.tracker.history.rows[-1]["val_loss"]),
+            )
+        schedule = self.config.train.schedule
+        if epoch % schedule.val_every != 0 or impute_bundle is None:
+            return False
+        score = score_val_impute(eval_model, impute_bundle)
+        if not np.isfinite(score):
+            raise RuntimeError(
+                "non-finite val-impute score; aborting selection"
+            )
+        return state.tracker.consider(eval_model, score)
 
     def _fire_val_hook(
             self,
@@ -679,133 +818,6 @@ def run_m2_training_from_config(config: RealM2Config) -> TrainHistory:
     return history
 
 
-def _prepare_artifacts_and_pool(
-        config: RealM2Config,
-) -> tuple[ArtifactPaths, RealBatchPool]:
-    """Ensure artifact dirs, fit/save scaler, write split pin, return pool.
-
-    Parameters
-    ----------
-    config : RealM2Config
-        Validated real-m2 config.
-
-    Returns
-    -------
-    paths : ArtifactPaths
-        Resolved artifact layout.
-    pool : RealBatchPool
-        Normalized train/val pools.
-    """
-    paths = resolve_artifact_paths(config.train.protocol.artifact_dir)
-    _assert_not_frozen_artifact_dir(paths)
-    paths.ensure()
-    # shortcut: delete best before manifest so pin never outlives the ckpt.
-    _clear_stale_checkpoint_files(paths)
-    pool, scaler = load_normalized_pool(config)
-    scaler.save(resolve_scaler_path(paths.checkpoint_dir()))
-    processed = config.data.resolve_processed_dir(_REPO_ROOT)
-    _dataset, split = load_processed_dataset(processed)
-    write_split_manifest(
-        paths.checkpoint_dir(),
-        build_split_manifest(
-            processed_dir=processed,
-            split_mode=config.data.split_mode,
-            split_seed=config.data.split_seed,
-            fractions={
-                "train": config.data.train_fraction,
-                "val": config.data.val_fraction,
-                "test": config.data.test_fraction,
-            },
-            split=split,
-        ),
-    )
-    return paths, pool
-
-
-def _clear_stale_checkpoint_files(paths: ArtifactPaths) -> None:
-    """Remove prior best checkpoint / sidecar before writing a new pin."""
-    best = paths.best_checkpoint()
-    if best.is_file():
-        best.unlink()
-    sidecar = paths.model_config()
-    if sidecar.is_file():
-        sidecar.unlink()
-
-
-def _assert_not_frozen_artifact_dir(paths: ArtifactPaths) -> None:
-    """Refuse train writes into frozen claim artifact roots.
-
-    Parameters
-    ----------
-    paths : ArtifactPaths
-        Resolved artifact layout for this run.
-
-    Raises
-    ------
-    RuntimeError
-        When ``paths.root`` is ``artifacts/m2``, ``m3``, or ``m7``.
-    """
-    root = paths.root.resolve()
-    for rel in _FROZEN_ARTIFACT_DIRS:
-        frozen = (_REPO_ROOT / rel).resolve()
-        if root == frozen or root.is_relative_to(frozen):
-            raise RuntimeError(
-                f"refusing to train into frozen claim dir {paths.root}"
-            )
-
-
-def _assert_wp0_consumable(config: RealM2Config) -> None:
-    """Raise if YAML asks for M7.5 flags that training does not yet consume.
-
-    Also builds DSM settings so invalid loss combos fail before artifact wipe.
-
-    Parameters
-    ----------
-    config : RealM2Config
-        Config about to train.
-
-    Raises
-    ------
-    NotImplementedError
-        Naming each non-legacy unused setting.
-    ValueError
-        From ``DSMLossSettings.validate`` (e.g. clean + nonzero obs weight).
-    """
-    protocol = config.train.protocol
-    sample = config.sample
-    transform = config.data.transform
-    legacy_model = default_score_net_config(config.data.n_features)
-    # (condition_is_bad, flag_name) — loop keeps branch count down.
-    # shortcut: keep refusing parameterization / sample.t_eps until
-    # real_val + trainer val hook wrap ScoreFromEps and resolve sample t_eps.
-    checks: tuple[tuple[bool, str], ...] = (
-        (protocol.parameterization != "score", "train.parameterization"),
-        (protocol.ema_decay is not None, "train.ema_decay"),
-        (protocol.lr_schedule != "constant", "train.lr_schedule"),
-        (protocol.select_by != "val_dsm_loss", "train.select_by"),
-        (protocol.mixed_select != "per_batch", "train.mixed_select"),
-        (protocol.block_len_range is not None, "train.block_len_range"),
-        (protocol.max_blocks_per_feature != 1, "train.max_blocks_per_feature"),
-        (protocol.warmup_steps != 0, "train.warmup_steps"),
-        (config.model != legacy_model, "model.*"),
-        (sample.t_eps is not None, "sample.t_eps"),
-        # Until WP7/WP-B4 wire replace_noised through val/bench/app.
-        (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
-        (bool(transform.log1p_features), "data.transform.log1p_features"),
-        (transform.clip_nonnegative, "data.transform.clip_nonnegative"),
-        (
-            not config.data.allow_empty_feature_fallback,
-            "data.allow_empty_feature_fallback",
-        ),
-    )
-    bad = [name for is_bad, name in checks if is_bad]
-    if bad:
-        raise NotImplementedError(
-            "M7.5 flags not wired yet: " + ", ".join(bad)
-        )
-    dsm_settings_from_real_config(config)
-
-
 def _build_m2_trainer(
         config: RealM2Config,
         paths: ArtifactPaths,
@@ -833,6 +845,8 @@ def _build_m2_trainer(
         jax.random.PRNGKey(config.train.protocol.seed)
     )
     sde = VPSDE(config.sde)
+    protocol = config.train.protocol
+    sample_t_eps = resolve_sample_t_eps(config.sample.t_eps, protocol.t_eps)
     bundle = M2TrainerBundle(
         config=config,
         model=ConditionalScoreNet(
@@ -848,10 +862,11 @@ def _build_m2_trainer(
         pool=pool,
         val_hook=M2ValHookBundle(
             sde=sde,
-            t_eps=config.train.protocol.t_eps,
+            t_eps=sample_t_eps,
             k_samples=config.extras.snapshot_k_samples,
             solver_steps=config.extras.snapshot_solver_steps,
             diffusion_impl=str(config.sample.diffusion_impl),
+            parameterization=protocol.parameterization,
         ).as_hook(),
     )
     bundle.validate()
@@ -927,70 +942,54 @@ def run_mask_rate_sensitivity(
     return rows
 
 
-def build_real_train_step(
-        optimizer: optax.GradientTransformation,
-        loss_fn: RealConditionalDSMLoss,
-) -> Callable:
-    """Create a jitted train step for ``RealDSMBatch`` inputs.
+@dataclass
+class _GradHygiene:
+    """Accumulate pre-clip grad norms across training."""
 
-    Parameters
-    ----------
-    optimizer : optax.GradientTransformation
-        Optax optimizer.
-    loss_fn : RealConditionalDSMLoss
-        DSM loss closed over by the step.
+    n_steps: int = 0
+    n_clipped: int = 0
+    grad_norms: list[float] = field(default_factory=list)
 
-    Returns
-    -------
-    callable
-        ``(model, opt_state, batch, key) -> (model, opt_state, loss, grad_norm)``.
-    """
-
-    @eqx.filter_jit
-    def _step(
-            model: ConditionalScoreNet,
-            opt_state: optax.OptState,
-            batch: RealDSMBatch,
-            key: jax.Array,
-    ) -> tuple[
-        ConditionalScoreNet,
-        optax.OptState,
-        jnp.ndarray,
-        jnp.ndarray,
-    ]:
-        def _loss_fn(score_model: ConditionalScoreNet) -> jnp.ndarray:
-            return loss_fn(score_model, batch, key)
-
-        loss, grads = eqx.filter_value_and_grad(_loss_fn)(model)
-        grad_norm = _tree_grad_norm(grads)
-        updates, new_state = optimizer.update(
-            grads,
-            opt_state,
-            eqx.filter(model, eqx.is_array),
-        )
-        new_model = eqx.apply_updates(model, updates)
-        return new_model, new_state, loss, grad_norm
-
-    return _step
+    def absorb(self, totals: _StepTotals) -> None:
+        """Merge one epoch's step totals into the run totals."""
+        self.n_steps += len(totals.grad_norms)
+        self.n_clipped += totals.n_clipped
+        self.grad_norms.extend(totals.grad_norms)
 
 
-def _tree_grad_norm(grads: Any) -> jnp.ndarray:
-    """Compute the global L2 norm of a pytree of gradients.
+def _parameter_count(model: ConditionalScoreNet) -> int:
+    """Count array parameters in an Equinox model."""
+    leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
+    return int(sum(int(np.asarray(leaf).size) for leaf in leaves))
 
-    Parameters
-    ----------
-    grads : Any
-        Gradient pytree (Equinox-filtered).
 
-    Returns
-    -------
-    jax.Array
-        Scalar grad norm.
-    """
-    leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
-    if not leaves:
-        return jnp.asarray(0.0, dtype=jnp.float32)
-    total = jnp.asarray(0.0, dtype=jnp.float32)
-    for leaf in leaves:
-        total = total + jnp.sum(leaf.astype(jnp.float32) ** 2)
-    return jnp.sqrt(total)
+def _train_meta_payload(
+        config: RealM2Config,
+        best_model: ConditionalScoreNet,
+        hygiene: _GradHygiene,
+        selected_epoch: int | None,
+) -> dict[str, Any]:
+    """Build the ``train_meta.json`` payload for WP4."""
+    protocol = config.train.protocol
+    n_steps = max(hygiene.n_steps, 1)
+    median_grad = (
+        float(np.median(np.asarray(hygiene.grad_norms, dtype=np.float64)))
+        if hygiene.grad_norms
+        else 0.0
+    )
+    return {
+        "clipped_step_fraction": hygiene.n_clipped / float(n_steps),
+        "median_grad_norm": median_grad,
+        "ema_decay": protocol.ema_decay,
+        "parameter_count": _parameter_count(best_model),
+        # shortcut: null until WP3 exposes receptive_field(config)
+        "receptive_field": None,
+        # null when no selection epoch improved (fallback ckpt only)
+        "selected_epoch": selected_epoch,
+        "selection_fallback": selected_epoch is None,
+        "select_by": protocol.select_by,
+        "observed_input": protocol.observed_input,
+        "observed_mode": config.sample.observed_mode,
+        "lr_schedule": protocol.lr_schedule,
+        "warmup_steps": protocol.warmup_steps,
+    }

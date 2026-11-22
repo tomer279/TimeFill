@@ -287,8 +287,17 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   - `per_window` mixing yields both mask types inside one batch (with a
     fixed key).
   - Block masks with a range produce lengths within `[lo, hi]`.
-- **Done when:** a full `real_m7_5.yaml` run finishes and its train meta
-  reports a clipped-step fraction < 0.5 (target; report actual).
+- **Done when:** a full hygiene train finishes and its train meta reports a
+  clipped-step fraction < 0.5 (target; report actual). Full `real_m7_5.yaml`
+  still waits on WP3 model.* / WP5 transform.
+- **Done (2026-11-22):** EMA, val-impute select (model-arg JIT), masks,
+  warmup_cosine, `train_meta`, fallback ckpt, `configs/real_m7_5_hygiene.yaml`.
+  Decisions: skip PNG under impute-select; `selected_epoch=null` on fallback;
+  seeded val subset; multi-block = union. Hygiene smoke (5 ep × 40 steps,
+  tiny val_impute): `clipped_step_fraction=0.0`, `median_grad_norm≈0.44`,
+  `selected_epoch=5`, `parameter_count=17286`. Commands:
+  `pytest tests/test_wp4_train_hygiene.py -q` → **14 passed**;
+  shortened `run_m2_training_from_config(hygiene)` → `artifacts/m7_5/hygiene/`.
 
 ### WP5 — Feature transform and per-feature evaluation (finding 7)
 - Extend `FeatureScaler` with an optional per-feature `log1p` before the

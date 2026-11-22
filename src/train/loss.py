@@ -2,6 +2,8 @@
 
 Classes
 -------
+DsmLossExtras
+    Nested WP1/WP2/WP4 policy knobs for DSM.
 DSMLossSettings
     Mask / time / reduction hyperparameters for DSM.
 ConditionalDSMLoss
@@ -15,7 +17,7 @@ dsm_settings_from_config
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -44,6 +46,9 @@ _PARAM_SCORE = "score"
 _PARAM_EPS = "eps"
 _DEFAULT_PARAMETERIZATION = _PARAM_SCORE
 _ALLOWED_PARAMETERIZATIONS = frozenset({_PARAM_SCORE, _PARAM_EPS})
+_DEFAULT_MIXED_SELECT = "per_batch"
+_ALLOWED_MIXED_SELECT = frozenset({"per_batch", "per_window"})
+_DEFAULT_MAX_BLOCKS_PER_FEATURE = 1
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,85 @@ class _DsmKeyPack:
 
 
 @dataclass(frozen=True)
+class DsmLossExtras:
+    """Nested WP1/WP2/WP4 policy knobs for DSM.
+
+    Public methods
+    --------------
+    validate
+        Check allowlists and ranges.
+    to_dict
+        Serialize fields to a plain dict.
+
+    Instance variables
+    ------------------
+    observed_input : str
+        ``noised`` (legacy) or ``clean`` (match frozen sampler).
+    parameterization : str
+        ``score`` (legacy target ``-eps/std``) or ``eps`` (noise target).
+    mixed_select : str
+        ``per_batch`` (legacy) or ``per_window`` mixed coin flip.
+    block_len_range : tuple of int or None
+        Optional inclusive length bounds for block masks.
+    max_blocks_per_feature : int
+        Gaps per feature for block masks (default ``1``).
+    """
+
+    observed_input: str = _DEFAULT_OBSERVED_INPUT
+    parameterization: str = _DEFAULT_PARAMETERIZATION
+    mixed_select: str = _DEFAULT_MIXED_SELECT
+    block_len_range: tuple[int, int] | None = None
+    max_blocks_per_feature: int = _DEFAULT_MAX_BLOCKS_PER_FEATURE
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if extras are invalid."""
+        if self.observed_input not in _ALLOWED_OBSERVED_INPUT:
+            raise ValueError(
+                "observed_input must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_INPUT)}, "
+                f"got {self.observed_input!r}"
+            )
+        if self.parameterization not in _ALLOWED_PARAMETERIZATIONS:
+            raise ValueError(
+                "parameterization must be one of "
+                f"{sorted(_ALLOWED_PARAMETERIZATIONS)}, "
+                f"got {self.parameterization!r}"
+            )
+        if self.mixed_select not in _ALLOWED_MIXED_SELECT:
+            raise ValueError(
+                "mixed_select must be one of "
+                f"{sorted(_ALLOWED_MIXED_SELECT)}, "
+                f"got {self.mixed_select!r}"
+            )
+        if self.block_len_range is not None:
+            lo_bound, hi_bound = self.block_len_range
+            if lo_bound <= 0 or hi_bound < lo_bound:
+                raise ValueError(
+                    "block_len_range must satisfy 0 < lo <= hi, "
+                    f"got {self.block_len_range!r}"
+                )
+        if self.max_blocks_per_feature <= 0:
+            raise ValueError(
+                "max_blocks_per_feature must be positive, "
+                f"got {self.max_blocks_per_feature}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON/YAML-serializable dict of extras."""
+        return {
+            "observed_input": self.observed_input,
+            "parameterization": self.parameterization,
+            "mixed_select": self.mixed_select,
+            "block_len_range": (
+                None
+                if self.block_len_range is None
+                else list(self.block_len_range)
+            ),
+            "max_blocks_per_feature": self.max_blocks_per_feature,
+        }
+
+
+@dataclass(frozen=True)
 class DSMLossSettings:
     """Settings for conditional continuous DSM.
 
@@ -108,7 +192,7 @@ class DSMLossSettings:
     validate
         Check positivity and allowed mask modes.
     to_dict
-        Serialize fields to a plain dict.
+        Serialize fields to a plain dict (extras flattened).
 
     Instance variables
     ------------------
@@ -122,10 +206,8 @@ class DSMLossSettings:
         Weight on observed cells; M1 default is ``0.0`` (zero aux loss).
     mask_mode : str
         ``random``, ``block``, or ``mixed``.
-    observed_input : str
-        ``noised`` (legacy) or ``clean`` (match frozen sampler).
-    parameterization : str
-        ``score`` (legacy target ``-eps/std``) or ``eps`` (noise target).
+    extras : DsmLossExtras
+        Nested observed-input / parameterization / mask-hygiene knobs.
     """
 
     mask_rate: float
@@ -133,8 +215,32 @@ class DSMLossSettings:
     t_eps: float
     obs_loss_weight: float
     mask_mode: str
-    observed_input: str = _DEFAULT_OBSERVED_INPUT
-    parameterization: str = _DEFAULT_PARAMETERIZATION
+    extras: DsmLossExtras = field(default_factory=DsmLossExtras)
+
+    @property
+    def observed_input(self) -> str:
+        """Forward ``extras.observed_input`` for call-site parity."""
+        return self.extras.observed_input
+
+    @property
+    def parameterization(self) -> str:
+        """Forward ``extras.parameterization`` for call-site parity."""
+        return self.extras.parameterization
+
+    @property
+    def mixed_select(self) -> str:
+        """Forward ``extras.mixed_select`` for call-site parity."""
+        return self.extras.mixed_select
+
+    @property
+    def block_len_range(self) -> tuple[int, int] | None:
+        """Forward ``extras.block_len_range`` for call-site parity."""
+        return self.extras.block_len_range
+
+    @property
+    def max_blocks_per_feature(self) -> int:
+        """Forward ``extras.max_blocks_per_feature`` for call-site parity."""
+        return self.extras.max_blocks_per_feature
 
     def validate(self) -> None:
         """Raise ``ValueError`` if DSM settings are invalid."""
@@ -159,18 +265,7 @@ class DSMLossSettings:
             _MASK_MODE_MIXED,
         ):
             raise ValueError(f"unsupported mask_mode={self.mask_mode!r}")
-        if self.observed_input not in _ALLOWED_OBSERVED_INPUT:
-            raise ValueError(
-                "observed_input must be one of "
-                f"{sorted(_ALLOWED_OBSERVED_INPUT)}, "
-                f"got {self.observed_input!r}"
-            )
-        if self.parameterization not in _ALLOWED_PARAMETERIZATIONS:
-            raise ValueError(
-                "parameterization must be one of "
-                f"{sorted(_ALLOWED_PARAMETERIZATIONS)}, "
-                f"got {self.parameterization!r}"
-            )
+        self.extras.validate()
         if (
             self.observed_input == _OBSERVED_INPUT_CLEAN
             and self.obs_loss_weight != 0.0
@@ -186,17 +281,17 @@ class DSMLossSettings:
         Returns
         -------
         dict of str to Any
-            Field name to value.
+            Field name to value (extras flattened).
         """
-        return {
+        payload = {
             "mask_rate": self.mask_rate,
             "block_len": self.block_len,
             "t_eps": self.t_eps,
             "obs_loss_weight": self.obs_loss_weight,
             "mask_mode": self.mask_mode,
-            "observed_input": self.observed_input,
-            "parameterization": self.parameterization,
         }
+        payload.update(self.extras.to_dict())
+        return payload
 
 
 class ConditionalDSMLoss:
@@ -421,14 +516,17 @@ def dsm_settings_from_config(config: ToyM1Config) -> DSMLossSettings:
     DSMLossSettings
         Validated DSM hyperparameters.
     """
+    protocol = config.train.protocol
     settings = DSMLossSettings(
         mask_rate=config.data.mask_rate,
         block_len=config.data.block_len,
-        t_eps=config.train.protocol.t_eps,
-        obs_loss_weight=config.train.protocol.obs_loss_weight,
-        mask_mode=config.train.protocol.mask_mode,
-        observed_input=config.train.protocol.observed_input,
-        parameterization=config.train.protocol.parameterization,
+        t_eps=protocol.t_eps,
+        obs_loss_weight=protocol.obs_loss_weight,
+        mask_mode=protocol.mask_mode,
+        extras=DsmLossExtras(
+            observed_input=protocol.observed_input,
+            parameterization=protocol.parameterization,
+        ),
     )
     settings.validate()
     return settings

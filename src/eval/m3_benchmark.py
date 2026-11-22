@@ -142,18 +142,22 @@ class ImputeContextRequest:
         Terminal diffusion time.
     solver_steps : int
         Euler–Maruyama steps (bench or smoke).
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
     """
 
     model: ConditionalScoreNet
     sde_cfg: SdeConfig
     t_eps: float
     solver_steps: int
+    diffusion_impl: str = "dense"
 
     def build(self) -> ImputeContext:
         """Return a validated ``ImputeContext``."""
         settings = ImputeSolverSettings(
             solver_steps=int(self.solver_steps),
             t_eps=float(self.t_eps),
+            diffusion_impl=str(self.diffusion_impl),
         )
         context = ImputeContext(
             model=self.model,
@@ -165,7 +169,10 @@ class ImputeContextRequest:
 
     def describe(self) -> str:
         """Return a short solver summary."""
-        return f"solver_steps={self.solver_steps}, t_eps={self.t_eps}"
+        return (
+            f"solver_steps={self.solver_steps}, t_eps={self.t_eps}, "
+            f"diffusion_impl={self.diffusion_impl}"
+        )
 
 
 @dataclass(frozen=True)

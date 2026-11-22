@@ -48,12 +48,15 @@ class M2ValHookBundle:
         Posterior draws for the snapshot.
     solver_steps : int
         Diffrax steps for the snapshot.
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
     """
 
     sde: VPSDE
     t_eps: float
     k_samples: int
     solver_steps: int
+    diffusion_impl: str = "dense"
 
     def as_hook(self) -> Callable[[ValSnapshotPayload], Path]:
         """Return a hook closure bound to this bundle.
@@ -82,6 +85,7 @@ class M2ValHookBundle:
         settings = ImputeSolverSettings(
             solver_steps=self.solver_steps,
             t_eps=self.t_eps,
+            diffusion_impl=self.diffusion_impl,
         )
         imputer = ReverseSDEImputer(
             ImputeContext(

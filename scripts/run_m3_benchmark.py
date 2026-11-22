@@ -143,7 +143,7 @@ class BenchPaths:
 
 @dataclass(frozen=True)
 class SampleKnobs:
-    """TimeFill sample count and solver steps.
+    """TimeFill sample count, solver steps, and diffusion impl.
 
     Public methods
     --------------
@@ -158,20 +158,27 @@ class SampleKnobs:
         Posterior sample count ``K``.
     solver_steps : int
         Reverse-SDE Euler steps.
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
     """
 
     k_samples: int
     solver_steps: int
+    diffusion_impl: str = "dense"
 
     def describe(self) -> str:
         """Return a short sample/solver summary."""
-        return f"K={self.k_samples}, solver_steps={self.solver_steps}"
+        return (
+            f"K={self.k_samples}, solver_steps={self.solver_steps}, "
+            f"diffusion_impl={self.diffusion_impl}"
+        )
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | str]:
         """Return knobs as a plain dict."""
         return {
             "k_samples": int(self.k_samples),
             "solver_steps": int(self.solver_steps),
+            "diffusion_impl": str(self.diffusion_impl),
         }
 
 
@@ -404,6 +411,7 @@ class BenchM3ConfigLoader:
         max_windows = smoke_cfg.get("max_windows")
         k_samples = int(sample_raw["K_samples"])
         solver_steps = int(sample_raw["solver_steps"])
+        diffusion_impl = str(sample_raw.get("diffusion_impl", "dense"))
         if smoke:
             split_name = str(smoke_cfg.get("split", split_name))
             max_windows = smoke_cfg.get("max_windows")
@@ -427,6 +435,7 @@ class BenchM3ConfigLoader:
             sample=SampleKnobs(
                 k_samples=k_samples,
                 solver_steps=solver_steps,
+                diffusion_impl=diffusion_impl,
             ),
             seeds=SeedPair(
                 mask=int(seeds_raw["mask"]),
@@ -507,6 +516,7 @@ def load_impute_context(
         sde_cfg=real_cfg.sde,
         t_eps=float(real_cfg.train.protocol.t_eps),
         solver_steps=plan.sample.solver_steps,
+        diffusion_impl=str(plan.sample.diffusion_impl),
     ).build()
 
 

@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import yaml
 
+from src.data.val_impute_spec import validate_val_impute_mapping
+
 if TYPE_CHECKING:
     from src.data.schema import TimeSeriesBatch
 
@@ -576,6 +578,10 @@ class TrainProtocolConfig:
             mapping.get("artifact_dir", _DEFAULT_ARTIFACT_DIR)
         )
         self.extras = TrainProtocolExtras(mapping)
+        raw_val_impute = mapping.get("val_impute", None)
+        self.val_impute = (
+            None if raw_val_impute is None else dict(raw_val_impute)
+        )
 
     @property
     def parameterization(self) -> str:
@@ -638,6 +644,8 @@ class TrainProtocolConfig:
             "artifact_dir": self.artifact_dir,
         }
         merged.update(self.extras.to_dict())
+        if self.val_impute is not None:
+            merged["val_impute"] = dict(self.val_impute)
         return merged
 
     def validate(self) -> None:
@@ -657,6 +665,8 @@ class TrainProtocolConfig:
         if not self.artifact_dir:
             raise ValueError("artifact_dir must be a non-empty path string")
         self.extras.validate()
+        if self.val_impute is not None:
+            validate_val_impute_mapping(self.val_impute)
 
 
 class TrainConfig:
@@ -711,6 +721,16 @@ class TrainConfig:
         self.optimizer.validate()
         self.schedule.validate()
         self.protocol.validate()
+        if self.protocol.lr_schedule == "warmup_cosine":
+            total_steps = (
+                self.schedule.epochs * self.schedule.steps_per_epoch
+            )
+            if self.protocol.warmup_steps >= max(total_steps, 1):
+                raise ValueError(
+                    "warmup_steps must be < epochs * steps_per_epoch, "
+                    f"got warmup_steps={self.protocol.warmup_steps}, "
+                    f"total_steps={total_steps}"
+                )
 
 
 class SampleConfig:

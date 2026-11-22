@@ -23,6 +23,8 @@ save_checkpoint_with_sidecar
     Save ``.eqx`` plus ``model_config.json`` beside it.
 load_checkpoint_with_config
     Load with sidecar template, or legacy defaults when absent.
+write_train_meta
+    Write ``train_meta.json`` under an artifact root.
 resolve_artifact_paths
     Build ``ArtifactPaths`` from a config ``artifact_dir`` string.
 stub_val_imputation_hook
@@ -56,6 +58,7 @@ _LOSS_PNG_NAME = "loss_curves.png"
 _VAL_SUBDIR = "val_snapshots"
 _CKPT_SUBDIR = "checkpoints"
 _MODEL_CONFIG_NAME = "model_config.json"
+_TRAIN_META_NAME = "train_meta.json"
 
 
 @dataclass(frozen=True)
@@ -367,6 +370,33 @@ def save_model_config(path: Path, payload: Mapping[str, Any]) -> None:
         json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def write_train_meta(
+        root: Path | str,
+        payload: Mapping[str, Any],
+) -> Path:
+    """Write ``train_meta.json`` under an artifact root.
+
+    Parameters
+    ----------
+    root : path-like
+        Artifact directory (e.g. ``artifacts/m7_5/train``).
+    payload : Mapping of str to Any
+        Train hygiene fields (clip fraction, EMA, selected epoch, …).
+
+    Returns
+    -------
+    pathlib.Path
+        Path of the written JSON file.
+    """
+    path = Path(root) / _TRAIN_META_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def load_model_config(path: Path) -> dict[str, Any]:

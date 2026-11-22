@@ -3,10 +3,9 @@
 # See ASSUMPTIONS.md (Milestone 7.5). Flags are parsed in WP0; consumers land
 # in WP1–WP5. Artifacts go under artifacts/m7_5/train/ (never overwrite m2).
 #
-# Parse / config tests only until WP1+: `train_m2_real` / `run_m2_training`
-# raises NotImplementedError on non-legacy unused flags (eps, clean, EMA,
-# schedule, select_by, model.*, sample.*, transform, …). Use real_m2.yaml
-# for actual training until those WPs land.
+# WP4 wires EMA / schedule / select_by / masks / eps + sample.t_eps.
+# Still refuses WP3 model.* and WP5 transform until those WPs land.
+# Hygiene train: legacy model + empty transform + WP4 train flags.
 
 data:
   dataset_name: beijing_multisite_air_quality
@@ -79,7 +78,15 @@ train:
   lr_schedule: warmup_cosine
   warmup_steps: 1000
   select_by: val_impute_crps
+  val_impute:
+    n_windows: 64
+    K_samples: 8
+    solver_steps: 50
+    mask_seed: 0
+    sample_seed: 1
+    protocols: [mcar_0.3, block_8]
   artifact_dir: artifacts/m7_5/train
+  # Unused while select_by=val_impute_* (PNG hook skipped; see ASSUMPTIONS WP4).
   snapshot_k_samples: 4
   snapshot_solver_steps: 20
   sensitivity_mask_rates: null

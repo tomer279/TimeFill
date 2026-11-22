@@ -34,7 +34,7 @@ from src.data.adapt_config import AdaptM7Config
 from src.models.score_net import ConditionalScoreNet
 from src.sde.vp_sde import VPSDE
 from src.train.loop import build_optimizer
-from src.train.loss import DSMLossSettings
+from src.train.loss import DSMLossSettings, DsmLossExtras
 from src.train.real_loop import build_real_train_step
 from src.train.real_loss import RealConditionalDSMLoss, RealDSMBatch
 from src.train.real_pool import RealBatchPool
@@ -188,8 +188,10 @@ def dsm_settings_from_adapt(config: AdaptM7Config) -> DSMLossSettings:
         t_eps=float(config.train.protocol.t_eps),
         obs_loss_weight=float(config.train.protocol.obs_loss_weight),
         mask_mode=str(config.train.protocol.mask_mode),
-        observed_input=str(config.train.protocol.observed_input),
-        parameterization=parameterization,
+        extras=DsmLossExtras(
+            observed_input=str(config.train.protocol.observed_input),
+            parameterization=parameterization,
+        ),
     )
     settings.validate()
     return settings

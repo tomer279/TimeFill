@@ -58,6 +58,7 @@ from src.train.adapt_loop import dsm_settings_from_adapt
 from src.train.loss import (
     ConditionalDSMLoss,
     DSMLossSettings,
+    DsmLossExtras,
     dsm_settings_from_config,
 )
 from src.train.real_loop import _assert_wp0_consumable
@@ -170,7 +171,7 @@ def _clean_settings(observed_input: str) -> DSMLossSettings:
         t_eps=_T_EPS,
         obs_loss_weight=0.0,
         mask_mode="random",
-        observed_input=observed_input,
+        extras=DsmLossExtras(observed_input=observed_input),
     )
 
 
@@ -396,7 +397,7 @@ def test_clean_requires_zero_obs_loss_weight() -> None:
             t_eps=_T_EPS,
             obs_loss_weight=0.1,
             mask_mode="random",
-            observed_input="clean",
+            extras=DsmLossExtras(observed_input="clean"),
         ).validate()
 
 

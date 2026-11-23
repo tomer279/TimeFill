@@ -7,14 +7,16 @@ remainders with sentinel ``0.0`` and ``m = 0``, then optionally cap with
 ``max_windows``.
 
 **Shared (Exact Beijing + Flexible):** ``adapt_validated_frame`` /
-``WindowAdaptRequest`` pad / multi-window / cap. Exact M4 callers keep using
-this entry only (no min-length / sparsity reject; short series still pad).
+``WindowAdaptRequest`` pad / multi-window / cap (no min-length / sparsity
+reject; short series still pad).
 
-**Flexible-only (M6):** ``adapt_flexible_frame`` optionally bins wall-clock
-timestamps to an hourly last-value-in-bin grid, then enforces ASSUMPTIONS M6
-reject thresholds (too short / too sparse / schema-invalid) with user-facing
-``ValueError`` messages before the shared pad path. Padded cells are never
-ground-truth imputation targets.
+**Exact with timestamps (M7.5):** ``adapt_exact_frame`` hourly-bins (same
+last-value path + duplicate-hour reject) then shared pad. Without timestamps,
+row order only.
+
+**Flexible-only (M6):** ``adapt_flexible_frame`` optionally bins, then
+enforces ASSUMPTIONS M6 reject thresholds before the shared pad path.
+Padded cells are never ground-truth imputation targets.
 
 Classes
 -------
@@ -31,10 +33,14 @@ Functions
 ---------
 adapt_validated_frame
     Cut / pad non-overlapping windows (Exact + shared pad core).
+adapt_exact_frame
+    Exact path: optional hourly bin, then ``adapt_validated_frame``.
 default_ingest_reject_policy
     Build ASSUMPTIONS defaults from ``seq_len``.
 bin_validated_frame_hourly
     Hourly last-value-in-bin grid when timestamps are present.
+multi_row_hour_warnings
+    Preview warnings when hours contain multiple raw rows.
 adapt_flexible_frame
     Optional bin → reject → shared ``adapt_validated_frame``.
 """
@@ -66,6 +72,9 @@ _DEFAULT_MIN_OBSERVED_PER_FEATURE = 0.05
 _MASK_COMPARE_TOL = 1e-6
 _HOUR_DELTA = np.timedelta64(1, "h")
 _HOUR_UNIT = "h"
+# shortcut: fixed 0.01 threshold, promote to ingest_m6.yaml if product needs a dial.
+_MAX_DUPLICATE_HOUR_SHARE = 0.01
+_MIN_ROWS_PER_DUP_HOUR = 2
 
 
 @dataclass(frozen=True)
@@ -397,7 +406,9 @@ def bin_validated_frame_hourly(frame: ValidatedFrame) -> ValidatedFrame:
     """Resample a frame onto a contiguous hourly last-value-in-bin grid.
 
     Empty hours become native missing (``m = 0``, sentinel ``0.0``). Duplicate
-    hours keep the last **observed** value per feature. Timestamps are for
+    hours keep the last **observed** value per feature. Exact same-second
+    repeats contribute to a duplicate-hour share; above
+    ``_MAX_DUPLICATE_HOUR_SHARE`` the frame is rejected. Timestamps are for
     binning only; irregular wall-clock SDE dynamics remain deferred.
 
     Parameters
@@ -413,7 +424,8 @@ def bin_validated_frame_hourly(frame: ValidatedFrame) -> ValidatedFrame:
     Raises
     ------
     ValueError
-        If timestamps are missing, length-mismatched, or not datetime-like.
+        If timestamps are missing, length-mismatched, not datetime-like, or
+        the duplicate-hour share is too high.
     """
     if frame.timestamps is None:
         raise ValueError(
@@ -430,11 +442,13 @@ def bin_validated_frame_hourly(frame: ValidatedFrame) -> ValidatedFrame:
         raise ValueError(
             "schema-invalid: cannot bin an empty ValidatedFrame"
         )
+    stamps_sec = np.asarray(frame.timestamps, dtype="datetime64[s]")
     stamps = _as_hourly_timestamps(frame.timestamps)
     order = np.argsort(stamps, kind="mergesort")
     stamps_sorted = stamps[order]
     values_sorted = frame.values[order]
     masks_sorted = frame.native_mask[order]
+    _assert_duplicate_hour_share(stamps_sorted, stamps_sec[order])
     buffers = _allocate_hourly_grid(
         stamps_sorted[0],
         stamps_sorted[-1],
@@ -453,6 +467,70 @@ def bin_validated_frame_hourly(frame: ValidatedFrame) -> ValidatedFrame:
         timestamps=buffers.grid,
         entity_id=frame.entity_id,
     )
+
+
+def multi_row_hour_warnings(frame: ValidatedFrame) -> tuple[str, ...]:
+    """Return preview warnings when hourly bins collapse multiple raw rows.
+
+    Counts hours (after ``datetime64[h]`` cast) with ≥2 raw rows. Exact
+    same-second rejects still happen inside ``bin_validated_frame_hourly``;
+    this only warns about silent last-value collapses (including sub-hourly).
+
+    Parameters
+    ----------
+    frame : ValidatedFrame
+        Pre-bin parse result (warnings are empty when timestamps are absent).
+
+    Returns
+    -------
+    tuple of str
+        Zero or one user-facing warning string.
+    """
+    if frame.timestamps is None:
+        return ()
+    try:
+        stamps = _as_hourly_timestamps(frame.timestamps)
+    except ValueError:
+        return ()
+    _uniq, counts = np.unique(stamps, return_counts=True)
+    n_multi = int(np.sum(counts >= _MIN_ROWS_PER_DUP_HOUR))
+    if n_multi <= 0:
+        return ()
+    return (
+        f"{n_multi} hours had multiple rows; kept last value",
+    )
+
+
+def adapt_exact_frame(
+        frame: ValidatedFrame,
+        request: WindowAdaptRequest,
+) -> AdaptedWindows:
+    """Exact Beijing path: hourly bin when timestamps exist, then pad/cut.
+
+    Does **not** apply Flexible ``IngestRejectPolicy`` floors. Multi-entity and
+    non-finite rejects happen earlier in schema validation.
+
+    Parameters
+    ----------
+    frame : ValidatedFrame
+        Exact-schema table in original units.
+    request : WindowAdaptRequest
+        ``seq_len`` / optional ``max_windows``.
+
+    Returns
+    -------
+    AdaptedWindows
+        ``(B, T, F)`` windows; pad cells have ``m = 0``.
+
+    Raises
+    ------
+    ValueError
+        From hourly binning (duplicate hours, bad timestamps) or window knobs.
+    """
+    grid_frame = frame
+    if frame.timestamps is not None:
+        grid_frame = bin_validated_frame_hourly(frame)
+    return adapt_validated_frame(grid_frame, request)
 
 
 def adapt_flexible_frame(
@@ -682,6 +760,47 @@ def _right_pad_mask(
         dtype=np.float32,
     )
     return np.concatenate([chunk.astype(np.float32), pad_block], axis=_ROW_AXIS)
+
+
+def _assert_duplicate_hour_share(
+        stamps_hourly: np.ndarray,
+        stamps_sec: np.ndarray,
+) -> None:
+    """Reject when too many grid hours have exact duplicate timestamps.
+
+    Sub-hourly cadence (e.g. 00:00 and 00:30) is allowed and bins to last
+    observed. Exact same-second repeats count: share = (hours containing an
+    exact duplicate stamp) / (dense grid length). Soft below-threshold
+    duplicates still keep last-observed.
+
+    Parameters
+    ----------
+    stamps_hourly : numpy.ndarray
+        Sorted ``datetime64[h]`` source stamps.
+    stamps_sec : numpy.ndarray
+        Sorted ``datetime64[s]`` stamps (same row order).
+
+    Raises
+    ------
+    ValueError
+        If the duplicate-hour share exceeds ``_MAX_DUPLICATE_HOUR_SHARE``.
+    """
+    uniq_sec, counts = np.unique(stamps_sec, return_counts=True)
+    dup_sec = uniq_sec[counts >= _MIN_ROWS_PER_DUP_HOUR]
+    if dup_sec.size == 0:
+        return
+    dup_hours = np.unique(dup_sec.astype(f"datetime64[{_HOUR_UNIT}]"))
+    n_dup_hours = int(dup_hours.size)
+    n_grid = int((stamps_hourly[-1] - stamps_hourly[0]) / _HOUR_DELTA) + 1
+    share = (
+        float(n_dup_hours) / float(n_grid) if n_grid > 0 else 0.0
+    )
+    if share > _MAX_DUPLICATE_HOUR_SHARE:
+        raise ValueError(
+            "duplicate-hour share "
+            f"{share:.4f} exceeds {_MAX_DUPLICATE_HOUR_SHARE} "
+            f"({n_dup_hours} of {n_grid} grid hours have duplicate timestamps)"
+        )
 
 
 def _as_hourly_timestamps(timestamps: np.ndarray) -> np.ndarray:

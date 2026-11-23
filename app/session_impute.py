@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -38,7 +39,7 @@ import numpy as np
 
 from app.m4_config import AppM4Config, AppM4SampleKnobs, load_app_m4_config
 from app.schema_validate import default_app_schema, validate_upload_csv
-from app.window_adapter import AdaptedWindows, adapt_validated_frame
+from app.window_adapter import AdaptedWindows, adapt_exact_frame
 from src.data.config import SdeConfig
 from src.data.normalize import FeatureScaler
 from src.data.real.masks import MaskComposer
@@ -686,7 +687,11 @@ class SessionImputer:
             jax.random.PRNGKey(_TEMPLATE_SEED),
             default_score_net_config(config.schema.n_features),
         )
-        model = load_checkpoint(config.paths.checkpoint, template)
+        # like=template is v1; cast keeps _LoadedBundle on ConditionalScoreNet.
+        model = cast(
+            ConditionalScoreNet,
+            load_checkpoint(config.paths.checkpoint, template),
+        )
         bundle = _LoadedBundle(
             model=model,
             scaler=scaler,
@@ -928,7 +933,7 @@ def impute_bundled_sample(app_config_path: Path | str) -> SessionImputeResult:
         config.paths.sample_csv,
         default_app_schema(),
     )
-    windows = adapt_validated_frame(
+    windows = adapt_exact_frame(
         frame,
         config.schema.window_request(config.smoke.max_windows),
     )

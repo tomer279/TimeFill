@@ -11,7 +11,7 @@ PreviewBuildInputs
 PreviewAdaptInfo
     Window count and adapt reject / success message.
 IngestPreviewSummary
-    Schema / missingness / window (or reject) summary before impute.
+    Schema / missingness / window / ingest-warning summary before impute.
 ImputeGateResult
     Whether pretrained impute is allowed and the user-facing reason.
 
@@ -51,6 +51,7 @@ from app.window_adapter import (
     WindowAdaptRequest,
     adapt_flexible_frame,
     default_ingest_reject_policy,
+    multi_row_hour_warnings,
 )
 
 MODE_EXACT_BEIJING = "exact_beijing"
@@ -199,10 +200,13 @@ class PreviewAdaptInfo:
         Adapted ``B``, or ``None`` when adapt failed.
     adapt_message : str or None
         Reject / success text for the window step.
+    warnings : tuple of str
+        Ingest warnings (e.g. multi-row hourly bins kept last value).
     """
 
     n_windows: int | None
     adapt_message: str | None
+    warnings: tuple[str, ...] = ()
 
     def has_windows(self) -> bool:
         """Return whether adapted windows are available.
@@ -251,7 +255,7 @@ class IngestPreviewSummary:
     per_feature_missing_percent : dict of str to float
         Native percent missing in ``[0, 100]`` per feature.
     adapt : PreviewAdaptInfo
-        Window count and adapt reject / success message.
+        Window count, adapt message, and ingest warnings.
     entity_id : str or None
         Optional entity label.
     has_timestamps : bool
@@ -299,6 +303,8 @@ class IngestPreviewSummary:
             lines.append(f"windows B={self.adapt.n_windows}")
         if self.adapt.adapt_message:
             lines.append(f"adapt: {self.adapt.adapt_message}")
+        for warning in self.adapt.warnings:
+            lines.append(f"warning: {warning}")
         return lines
 
 
@@ -510,6 +516,7 @@ def build_ingest_preview(inputs: PreviewBuildInputs) -> IngestPreviewSummary:
         adapt=PreviewAdaptInfo(
             n_windows=inputs.window_count(),
             adapt_message=adapt_message,
+            warnings=multi_row_hour_warnings(frame),
         ),
         entity_id=frame.entity_id,
         has_timestamps=frame.timestamps is not None,

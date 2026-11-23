@@ -813,26 +813,21 @@ class SessionImputer:
         ImputeTensors
             Posterior tensors in original units.
         """
-        samples_n, mean_n, quantiles_n = self._run_reverse_sde(
+        samples_n, _mean_n, quantiles_n = self._run_reverse_sde(
             prepared.x_obs_n,
             jnp.asarray(prepared.m_eval, dtype=jnp.float32),
             plan,
         )
         restorer = OriginalScaleRestorer(self.scaler)
         ones = jnp.ones_like(prepared.x_obs_n)
+        mean, samples = restorer.restore_mean_from_samples(samples_n, ones)
         return ImputeTensors(
-            mean=np.asarray(
-                restorer.restore_windows(mean_n, ones),
-                np.float32,
-            ),
+            mean=np.asarray(mean, np.float32),
             quantiles=np.asarray(
                 restorer.restore_quantiles(quantiles_n, ones),
                 np.float32,
             ),
-            samples=np.asarray(
-                restorer.restore_samples(samples_n, ones),
-                np.float32,
-            ),
+            samples=np.asarray(samples, np.float32),
         )
 
     def _run_reverse_sde(

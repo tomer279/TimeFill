@@ -242,22 +242,36 @@ class DataBundle:
         Normalized values and native masks.
     scaler : FeatureScaler
         Loaded M2 train scaler.
+    config_feature_names : tuple of str
+        Bench-config names used when the scaler NPZ has none.
     """
 
     windows: SplitWindowBundle
     scaler: FeatureScaler
+    config_feature_names: tuple[str, ...] = ()
 
     def feature_means(self) -> jnp.ndarray:
-        """Return ``FeatureScaler.mean`` in original units.
+        """Return per-feature means in original units for baselines.
+
+        Applies ``expm1`` on log1p features so LOCF / linear fill gaps in
+        the same units as restored observations.
 
         Returns
         -------
         jax.Array
             Means shaped ``(F,)``.
         """
-        if self.scaler.mean is None:
-            raise RuntimeError("loaded scaler has no mean vector")
-        return self.scaler.mean
+        return self.scaler.original_unit_means()
+
+    def feature_names(self) -> tuple[str, ...]:
+        """Return scaler names, else bench-config names, else ``f{i}``."""
+        names = tuple(self.scaler.feature_names)
+        n_features = int(self.scaler.n_features())
+        if len(names) == n_features:
+            return names
+        if len(self.config_feature_names) == n_features:
+            return tuple(self.config_feature_names)
+        return tuple(f"f{idx}" for idx in range(n_features))
 
     def require_feature_count(self, n_features: int) -> None:
         """Raise if the scaler feature count mismatches.

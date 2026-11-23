@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.eval.metrics import MetricsTable
@@ -42,6 +43,11 @@ _CSV_FIELDS = (
     "crps",
     "coverage_50",
     "coverage_90",
+    "mae_norm",
+    "rmse_norm",
+    "crps_norm",
+    "coverage_50_norm",
+    "coverage_90_norm",
     "mask_seed",
     "sample_seed",
     "n_target_cells",
@@ -49,6 +55,18 @@ _CSV_FIELDS = (
     "split",
     "k_samples",
 )
+_PER_FEATURE_FIELDS = (
+    "method",
+    "protocol",
+    "feature",
+    "mae",
+    "rmse",
+    "crps",
+    "coverage_50",
+    "coverage_90",
+    "n_target_cells",
+)
+_NAN = float("nan")
 
 
 @dataclass(frozen=True)
@@ -130,6 +148,8 @@ class ScoreBlock:
     --------------
     as_dict
         Export metric name → float.
+    as_norm_dict
+        Export normalized-unit metrics with ``_norm`` suffixes.
     from_table
         Classmethod: build from a ``MetricsTable``.
 
@@ -163,6 +183,16 @@ class ScoreBlock:
             "coverage_90": self.coverage_90,
         }
 
+    def as_norm_dict(self) -> dict[str, float]:
+        """Return the same scalars under ``*_norm`` keys."""
+        return {
+            "mae_norm": self.mae,
+            "rmse_norm": self.rmse,
+            "crps_norm": self.crps,
+            "coverage_50_norm": self.coverage_50,
+            "coverage_90_norm": self.coverage_90,
+        }
+
     @classmethod
     def from_table(cls, table: MetricsTable) -> "ScoreBlock":
         """Build a score block from an ``ImputationEvaluator`` table.
@@ -183,6 +213,17 @@ class ScoreBlock:
             crps=table.crps,
             coverage_50=table.coverage_50,
             coverage_90=table.coverage_90,
+        )
+
+    @classmethod
+    def nan_block(cls) -> "ScoreBlock":
+        """Return a block filled with NaNs (no normalized scores)."""
+        return cls(
+            mae=_NAN,
+            rmse=_NAN,
+            crps=_NAN,
+            coverage_50=_NAN,
+            coverage_90=_NAN,
         )
 
 
@@ -264,11 +305,13 @@ class MetricRecord:
     protocol : ProtocolKey
         Protocol identity.
     scores : ScoreBlock
-        Metric scalars.
+        Metric scalars in original units.
     meta : RunMeta
         Seeds, split, ``K``, point-metric policy.
     n_target_cells : int
         Count of scored artificial targets.
+    scores_norm : ScoreBlock
+        Metric scalars in normalized units.
     """
 
     method: str
@@ -276,6 +319,7 @@ class MetricRecord:
     scores: ScoreBlock
     meta: RunMeta
     n_target_cells: int
+    scores_norm: ScoreBlock = field(default_factory=ScoreBlock.nan_block)
 
     def as_dict(self) -> dict[str, float | int | str | bool | None]:
         """Flatten to the long-form artifact schema."""
@@ -286,6 +330,7 @@ class MetricRecord:
         }
         payload.update(self.protocol.table_fields())
         payload.update(self.scores.as_dict())
+        payload.update(self.scores_norm.as_norm_dict())
         meta = self.meta.as_dict()
         meta["k_samples"] = self.meta.k_for_method(self.method)
         if self.method in _POINT_METHODS:
@@ -384,12 +429,12 @@ class MetricsTableAssembler:
         return out
 
 
-def format_csv_cell(value: float | int | str | None) -> str:
-    """Format one CSV cell, using empty string for ``None``.
+def format_csv_cell(value: float | int | str | bool | None) -> str:
+    """Format one CSV cell; ``None`` / NaN → empty string.
 
     Parameters
     ----------
-    value : float or int or str or None
+    value : float or int or str or bool or None
         Cell value.
 
     Returns
@@ -399,7 +444,39 @@ def format_csv_cell(value: float | int | str | None) -> str:
     """
     if value is None:
         return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
     return str(value)
+
+
+def write_per_feature_csv(
+        path: Path,
+        rows: list[dict[str, float | int | str]],
+) -> Path:
+    """Write a long-form per-feature metrics CSV.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination CSV path.
+    rows : list of dict
+        Each row must include ``_PER_FEATURE_FIELDS`` keys.
+
+    Returns
+    -------
+    pathlib.Path
+        Path written.
+    """
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(list(_PER_FEATURE_FIELDS))
+        for row in rows:
+            writer.writerow(
+                [format_csv_cell(row.get(name)) for name in _PER_FEATURE_FIELDS]
+            )
+    return out
 
 
 def point_method_names() -> frozenset[str]:
@@ -417,6 +494,7 @@ __all__ = [
     "MetricRecord",
     "MetricsTableAssembler",
     "ProtocolKey",
+    "write_per_feature_csv",
     "RunMeta",
     "ScoreBlock",
     "SeedPair",

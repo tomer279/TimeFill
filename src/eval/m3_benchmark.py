@@ -65,8 +65,17 @@ from src.eval.m3_table import (
     ScoreBlock,
     SeedPair,
     point_method_names,
+    write_per_feature_csv,
 )
-from src.eval.metrics import EvalTensors, ImputationEvaluator, MetricsTable
+from src.eval.metrics import (
+    EvalTensors,
+    ImputationEvaluator,
+    MetricsTable,
+    empirical_crps_per_feature,
+    interval_coverage_per_feature,
+    masked_mae_per_feature,
+    masked_rmse_per_feature,
+)
 from src.eval.plots import ImputationPlotData
 from src.models.score_net import ConditionalScoreNet
 from src.sample.reverse_sde import (
@@ -77,6 +86,9 @@ from src.sample.reverse_sde import (
     grid_timestamps,
 )
 from src.sde.vp_sde import VPSDE
+
+_COVERAGE_50 = 0.5
+_COVERAGE_90 = 0.9
 
 _POINT_METHODS = point_method_names()
 
@@ -232,16 +244,22 @@ class TimeFillResult:
     Instance variables
     ------------------
     mean : jax.Array
-        Posterior mean ``(B, T, F)``.
+        Posterior mean ``(B, T, F)`` in original units.
     samples : jax.Array
-        Posterior samples ``(B, K, T, F)``.
+        Posterior samples ``(B, K, T, F)`` in original units.
     quantiles : jax.Array
-        Low/high bands ``(B, T, F, 2)``.
+        Low/high bands ``(B, T, F, 2)`` in original units.
+    mean_n : jax.Array
+        Posterior mean in normalized units.
+    samples_n : jax.Array
+        Posterior samples in normalized units.
     """
 
     mean: jnp.ndarray
     samples: jnp.ndarray
     quantiles: jnp.ndarray
+    mean_n: jnp.ndarray
+    samples_n: jnp.ndarray
 
     def as_plot_data(
             self,
@@ -351,16 +369,19 @@ class M3BenchmarkRunner:
         """
         self.paths.ensure()
         assembler = MetricsTableAssembler()
+        per_feature_rows: list[dict[str, float | int | str]] = []
         panel_written = False
         for protocol in self.grid.protocols:
-            rows, view = self._run_protocol(protocol)
+            rows, view, feature_rows = self._run_protocol(protocol)
             for row in rows:
                 assembler.append(row)
+            per_feature_rows.extend(feature_rows)
             if not panel_written and view is not None:
                 self._helpers.save_panel(view, self.paths.comparison_panel())
                 panel_written = True
         assembler.write_csv(self.paths.metrics_csv())
         assembler.write_json(self.paths.metrics_json())
+        write_per_feature_csv(self.paths.per_feature_csv(), per_feature_rows)
         return assembler.rows()
 
     def score_method(self, score_input: MethodScoreInput) -> MetricsTable:
@@ -381,7 +402,11 @@ class M3BenchmarkRunner:
     def _run_protocol(
             self,
             protocol: ProtocolKey,
-    ) -> tuple[list[MetricRecord], ComparisonView | None]:
+    ) -> tuple[
+        list[MetricRecord],
+        ComparisonView | None,
+        list[dict[str, float | int | str]],
+    ]:
         """Impute and score all methods for one protocol."""
         masks = compose_protocol_masks(
             ProtocolComposeRequest(
@@ -395,16 +420,26 @@ class M3BenchmarkRunner:
         metric_mask = masks.metric_mask()
         n_targets = masks.n_target_cells()
         packs = self._method_packs(scored, timefill, metric_mask)
+        packs_norm = self._method_packs_norm(
+            masks, scored, timefill, metric_mask
+        )
         rows = [
-            self._row_from_score(name, protocol, packs[name], n_targets)
+            self._row_from_score(
+                name,
+                protocol,
+                packs[name],
+                n_targets,
+                packs_norm[name],
+            )
             for name in self.grid.methods
         ]
+        feature_rows = self._per_feature_rows(protocol, packs)
         view = ComparisonView(
             bands=timefill.as_plot_data(scored, metric_mask),
             baselines=scored.baselines,
             spec=PanelSpec(title=panel_title(protocol)),
         )
-        return rows, view
+        return rows, view, feature_rows
 
     def _original_unit_context(
             self,
@@ -441,10 +476,15 @@ class M3BenchmarkRunner:
         )
         restorer = OriginalScaleRestorer(self.data.scaler)
         m_native = masks.m_native
+        mean, samples = restorer.restore_mean_from_samples(
+            samples_n, m_native
+        )
         return TimeFillResult(
-            mean=restorer.restore_windows(mean_n, m_native),
-            samples=restorer.restore_samples(samples_n, m_native),
+            mean=mean,
+            samples=samples,
             quantiles=restorer.restore_quantiles(quantiles_n, m_native),
+            mean_n=mean_n,
+            samples_n=samples_n,
         )
 
     def _method_packs(
@@ -471,15 +511,88 @@ class M3BenchmarkRunner:
             ),
         }
 
+    def _method_packs_norm(
+            self,
+            masks: ProtocolMaskBundle,
+            scored: ScoredContext,
+            timefill: TimeFillResult,
+            metric_mask: jnp.ndarray,
+    ) -> dict[str, MethodScoreInput]:
+        """Build normalized-unit score packs (baselines via scaler.transform)."""
+        truth_n = self.data.windows.values_n
+        scaler = self.data.scaler
+        m_native = masks.m_native
+        locf_n = scaler.transform(scored.baselines.locf, m_native)
+        linear_n = scaler.transform(scored.baselines.linear, m_native)
+        return {
+            "timefill": MethodScoreInput(
+                truth=truth_n,
+                mean=timefill.mean_n,
+                samples=timefill.samples_n,
+                metric_mask=metric_mask,
+            ),
+            "locf": MethodScoreInput(
+                truth=truth_n,
+                mean=locf_n,
+                samples=point_fill_as_ensemble(locf_n),
+                metric_mask=metric_mask,
+            ),
+            "linear": MethodScoreInput(
+                truth=truth_n,
+                mean=linear_n,
+                samples=point_fill_as_ensemble(linear_n),
+                metric_mask=metric_mask,
+            ),
+        }
+
+    def _per_feature_rows(
+            self,
+            protocol: ProtocolKey,
+            packs: dict[str, MethodScoreInput],
+    ) -> list[dict[str, float | int | str]]:
+        """Build per-feature metric rows for one protocol."""
+        names = self.data.feature_names()
+        rows: list[dict[str, float | int | str]] = []
+        for method, pack in packs.items():
+            if method not in self.grid.methods:
+                continue
+            tensors = pack.as_eval_tensors()
+            per_mae = masked_mae_per_feature(tensors)
+            per_rmse = masked_rmse_per_feature(tensors)
+            per_crps = empirical_crps_per_feature(tensors)
+            per_c50 = interval_coverage_per_feature(tensors, _COVERAGE_50)
+            per_c90 = interval_coverage_per_feature(tensors, _COVERAGE_90)
+            counts = jnp.sum(tensors.missing_weights(), axis=(0, 1))
+            n_features = int(per_mae.shape[0])
+            if len(names) != n_features:
+                names = tuple(f"f{idx}" for idx in range(n_features))
+            for feat_idx in range(n_features):
+                rows.append(
+                    {
+                        "method": method,
+                        "protocol": protocol.name,
+                        "feature": names[feat_idx],
+                        "mae": float(per_mae[feat_idx]),
+                        "rmse": float(per_rmse[feat_idx]),
+                        "crps": float(per_crps[feat_idx]),
+                        "coverage_50": float(per_c50[feat_idx]),
+                        "coverage_90": float(per_c90[feat_idx]),
+                        "n_target_cells": int(counts[feat_idx]),
+                    }
+                )
+        return rows
+
     def _row_from_score(
             self,
             method: str,
             protocol: ProtocolKey,
             pack: MethodScoreInput,
             n_targets: int,
+            pack_norm: MethodScoreInput,
     ) -> MetricRecord:
         """Build a composed row from scored tensors."""
         table = self.score_method(pack)
+        table_norm = self.score_method(pack_norm)
         point_policy = (
             "degenerate_k1" if method in _POINT_METHODS else "ensemble"
         )
@@ -495,6 +608,7 @@ class M3BenchmarkRunner:
                 split_pinned=self.data.windows.split_pinned,
             ),
             n_target_cells=n_targets,
+            scores_norm=ScoreBlock.from_table(table_norm),
         )
 
 

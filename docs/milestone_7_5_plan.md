@@ -344,6 +344,14 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
     (legacy flag).
   - All-observed mask → metrics are NaN, not 0.0.
 - **Done when:** the benchmark writes per-feature tables.
+- **Done (2026-11-23):** `FeatureScaler` log1p/clip/empty-fallback (A11);
+  A8 leakage tests via `fit_scaler_on_train_split`; A9 NaN empty weights;
+  mean-after-restore; true per-feature MAE/RMSE/CRPS/coverage +
+  `per_feature.csv` / `*_norm`; NPZ names + bench-config fallback.
+  Decisions: clip all; raise on log1p `x<0`; adapt floor when fallback
+  false; no adapt log1p; legacy NPZ → empty names. Commands:
+  `pytest tests/test_wp5_feature_transform.py tests/test_normalize_fit_train_only.py -q`
+  → **19 passed**; `pytest -q` → **229 passed** in ~135s.
 
 ### WP6 — Sampler efficiency and point estimate (findings 10, 11)
 - `diffusion_impl: diagonal`: replace `jnp.diag(...)` with a diagonal

@@ -107,20 +107,30 @@ class DemoEvalSmokeResult:
         MAE / RMSE / CRPS / coverage.
     label : str
         Run description from the request.
+    n_target_cells : int
+        Count of artificial-target cells scored.
     """
 
     metrics: MetricsTable
     label: str
+    n_target_cells: int = 0
 
-    def as_rows(self) -> list[tuple[str, float]]:
-        """Return ordered metric rows.
+    def as_rows(self) -> list[tuple[str, str]]:
+        """Return ordered metric rows as strings.
 
         Returns
         -------
         list of tuple
-            ``(name, value)`` pairs.
+            ``(name, value)`` pairs; empty targets show
+            ``\"no target cells\"``.
         """
-        return self.metrics.rows()
+        rows: list[tuple[str, str]] = []
+        for name, value in self.metrics.rows():
+            if self.n_target_cells <= 0:
+                rows.append((name, "no target cells"))
+            else:
+                rows.append((name, str(value)))
+        return rows
 
     def caption(self) -> str:
         """Return a disclaimer for the UI.
@@ -173,12 +183,16 @@ def run_demo_eval_smoke(
         )
     )
     score_mask = metric_observation_mask(m_native, m_artificial)
-    table = ImputationEvaluator().compute(
-        EvalTensors(
-            truth=values,
-            mean=jnp.asarray(result.tensors.mean, dtype=jnp.float32),
-            samples=jnp.asarray(result.tensors.samples, dtype=jnp.float32),
-            mask=score_mask,
-        )
+    tensors = EvalTensors(
+        truth=values,
+        mean=jnp.asarray(result.tensors.mean, dtype=jnp.float32),
+        samples=jnp.asarray(result.tensors.samples, dtype=jnp.float32),
+        mask=score_mask,
     )
-    return DemoEvalSmokeResult(metrics=table, label=request.describe())
+    table = ImputationEvaluator().compute(tensors)
+    n_targets = int(jnp.sum(tensors.missing_weights()))
+    return DemoEvalSmokeResult(
+        metrics=table,
+        label=request.describe(),
+        n_target_cells=n_targets,
+    )

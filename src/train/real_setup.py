@@ -145,20 +145,14 @@ def assert_wp0_consumable(config: RealM2Config) -> None:
         From ``DSMLossSettings.validate`` (e.g. clean + nonzero obs weight).
     """
     sample = config.sample
-    transform = config.data.transform
     legacy_model = default_score_net_config(config.data.n_features)
     # WP4 consumes EMA / schedule / select / masks / eps + sample.t_eps.
+    # WP5 consumes data.transform / allow_empty_feature_fallback.
     # shortcut: refuse model.* until pre-WP7 wires build_score_net(config.model)
-    # + sidecar write; refuse WP5 transform until WP5.
+    # + sidecar write.
     checks: tuple[tuple[bool, str], ...] = (
         (config.model != legacy_model, "model.*"),
         (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
-        (bool(transform.log1p_features), "data.transform.log1p_features"),
-        (transform.clip_nonnegative, "data.transform.clip_nonnegative"),
-        (
-            not config.data.allow_empty_feature_fallback,
-            "data.allow_empty_feature_fallback",
-        ),
     )
     bad = [name for is_bad, name in checks if is_bad]
     if bad:

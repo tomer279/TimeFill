@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
@@ -32,7 +33,9 @@ from src.data.real.masks import artificial_target_mask
 from src.data.real_config import RealM2Config
 from src.data.schema import BATCH_AXIS, N_AXES
 from src.eval.metrics import MetricsTable
-from src.train.real_pool import RealBatchPool
+
+if TYPE_CHECKING:
+    from src.train.real_pool import RealBatchPool
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _IMPUTE_PNG = "imputation_mean_bands.png"
@@ -124,6 +127,8 @@ class OriginalScaleRestorer:
         Inverse-transform a ``(B, T, F)`` tensor.
     restore_samples
         Inverse-transform a ``(B, K, T, F)`` sample stack.
+    restore_mean_from_samples
+        Restore samples then average over ``K`` (correct under log1p).
     restore_quantiles
         Inverse-transform low/high quantiles ``(B, T, F, 2)``.
 
@@ -203,6 +208,34 @@ class OriginalScaleRestorer:
         mask_flat = jnp.repeat(restore_mask, n_samples, axis=BATCH_AXIS)
         restored = self.scaler.inverse_transform(flat, mask_flat)
         return restored.reshape((batch_size, n_samples, seq_len, n_features))
+
+    def restore_mean_from_samples(
+            self,
+            samples: jnp.ndarray,
+            restore_mask: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Restore samples, then take the posterior mean in original units.
+
+        Averaging in normalized / log1p space then ``expm1`` underestimates
+        the original-unit mean; mean-after-restore is required for log1p.
+
+        Parameters
+        ----------
+        samples : jax.Array
+            Normalized samples ``(B, K, T, F)``.
+        restore_mask : jax.Array
+            Window mask ``(B, T, F)``.
+
+        Returns
+        -------
+        mean : jax.Array
+            Original-unit mean ``(B, T, F)``.
+        samples_orig : jax.Array
+            Original-unit samples ``(B, K, T, F)``.
+        """
+        samples_orig = self.restore_samples(samples, restore_mask)
+        mean = jnp.mean(samples_orig, axis=_SAMPLE_AXIS)
+        return mean, samples_orig
 
     def restore_quantiles(
             self,
@@ -339,6 +372,9 @@ def load_val_pool_with_scaler(
     RealBatchPool
         Normalized train/val pools (val used for the fixed batch).
     """
+    # Late import: src.train.__init__ pulls real_val_select → this module.
+    from src.train.real_pool import RealBatchPool
+
     if not scaler.is_fitted():
         raise RuntimeError("scaler must be loaded before normalizing val")
     processed = config.data.resolve_processed_dir(_REPO_ROOT)

@@ -248,6 +248,123 @@ def test_scaler_ignores_smoke_held_out_cells() -> None:
     assert float(jnp.max(jnp.abs(global_scaler.mean - 2.0))) > 1.0
 
 
+def _tiny_config_strict_features(tmp_path: Path) -> AdaptM7Config:
+    """Build a tiny adapt config with empty-feature fallback disabled (WP5).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Pytest temporary directory.
+
+    Returns
+    -------
+    AdaptM7Config
+        Config whose caps refuse silent identity scalers.
+    """
+    try:
+        caps = AdaptCaps(
+            artifact_dir=str(tmp_path / "m7"),
+            timeout_seconds=120.0,
+            min_windows=2,
+            train_fraction=_TRAIN_FRACTION,
+            smoke_mcar_rate=0.30,
+            allow_empty_feature_fallback=False,
+        )
+    except TypeError as exc:
+        pytest.fail(
+            "WP5 AdaptCaps.allow_empty_feature_fallback missing: "
+            f"{exc}"
+        )
+    base = _tiny_config(tmp_path)
+    return AdaptM7Config(
+        caps=caps,
+        mode=base.mode,
+        geometry=base.geometry,
+        train=base.train,
+        sde=base.sde,
+        sample=base.sample,
+    )
+
+
+def test_adapt_caps_accepts_allow_empty_feature_fallback(
+        tmp_path: Path,
+) -> None:
+    """Adapt caps parse ``allow_empty_feature_fallback`` (WP5 A11)."""
+    config = _tiny_config_strict_features(tmp_path)
+    assert config.caps.allow_empty_feature_fallback is False
+
+
+def test_build_scaled_pool_raises_on_empty_train_feature() -> None:
+    """Empty train-slice feature raises when fallback is false (A11)."""
+    windows = _synthetic_windows()
+    values = np.array(windows.values, copy=True)
+    masks = np.array(windows.native_masks, copy=True)
+    masks[:, :, 0] = MASK_MISSING
+    values[:, :, 0] = 0.0
+    empty = AdaptWindowTensors(
+        values=values,
+        native_masks=masks,
+        feature_names=windows.feature_names,
+    )
+    split = split_adapt_windows(empty.n_windows(), _TRAIN_FRACTION)
+    runner = AdaptSessionRunner()
+    try:
+        runner.build_scaled_pool(
+            empty,
+            split,
+            allow_empty_feature_fallback=False,
+        )
+    except TypeError as exc:
+        pytest.fail(
+            "WP5 build_scaled_pool allow_empty_feature_fallback "
+            f"missing: {exc}"
+        )
+    except ValueError as exc:
+        assert "adapt train fraction" in str(exc) or "f0" in str(exc)
+        return
+    pytest.fail("expected ValueError for empty train feature")
+
+
+def test_build_scaled_pool_raises_on_sparse_train_feature() -> None:
+    """Train-slice observed rate below 0.05 raises when fallback is false."""
+    windows = _synthetic_windows()
+    values = np.array(windows.values, copy=True)
+    masks = np.array(windows.native_masks, copy=True)
+    split = split_adapt_windows(windows.n_windows(), _TRAIN_FRACTION)
+    # One observed cell on train for feature 0 → rate 1/(n_train*T) < 0.05.
+    masks[split.train_idx, :, 0] = MASK_MISSING
+    values[split.train_idx, :, 0] = 0.0
+    train0 = int(split.train_idx[0])
+    masks[train0, 0, 0] = 1.0
+    values[train0, 0, 0] = 2.0
+    sparse = AdaptWindowTensors(
+        values=values,
+        native_masks=masks,
+        feature_names=windows.feature_names,
+    )
+    runner = AdaptSessionRunner()
+    try:
+        runner.build_scaled_pool(
+            sparse,
+            split,
+            allow_empty_feature_fallback=False,
+        )
+    except TypeError as exc:
+        pytest.fail(
+            "WP5 build_scaled_pool allow_empty_feature_fallback "
+            f"missing: {exc}"
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert (
+            "min_observed_rate_per_feature" in message
+            or "adapt train fraction" in message
+            or "f0" in message
+        )
+        return
+    pytest.fail("expected ValueError for sparse train feature")
+
+
 def test_fine_tune_refuses_f_mismatch(tmp_path: Path) -> None:
     """Fine-tune with F != base F raises a clear refusal."""
     windows = _synthetic_windows(n_features=3)

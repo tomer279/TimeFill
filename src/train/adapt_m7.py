@@ -47,7 +47,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import jax
 import jax.numpy as jnp
@@ -67,7 +67,7 @@ from src.data.adapt_config import (
     default_adapt_mode,
     load_adapt_m7_config,
 )
-from src.data.normalize import FeatureScaler
+from src.data.normalize import FeatureScaler, FeatureScalerOptions
 from src.data.real.specs import default_beijing_features
 from src.data.schema import (
     BATCH_AXIS,
@@ -96,6 +96,7 @@ _STATUS_SUCCESS = "success"
 _RUN_ID_SUFFIX_LEN = 6
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _M2_ARTIFACT_MARKER = "artifacts/m2"
+_MIN_OBSERVED_RATE_PER_FEATURE = 0.05
 
 __all__ = [
     "AdaptCaps",
@@ -359,7 +360,7 @@ class AdaptSessionResult:
     run_dir : pathlib.Path
         Absolute run directory.
     model : ConditionalScoreNet
-        Best-val score net from the capped run.
+        Best-val score net from the capped run (adapt stays on v1).
     scaler : FeatureScaler
         Train-only fitted scaler.
     split : AdaptWindowSplit
@@ -432,7 +433,13 @@ class AdaptSessionRunner:
             request.windows.n_windows(),
             request.config.caps.train_fraction,
         )
-        scaler, pool = self.build_scaled_pool(request.windows, split)
+        scaler, pool = self.build_scaled_pool(
+            request.windows,
+            split,
+            allow_empty_feature_fallback=(
+                request.config.caps.allow_empty_feature_fallback
+            ),
+        )
         policy = request.effective_policy()
         key_model, key_train = jax.random.split(
             jax.random.PRNGKey(request.config.train.protocol.seed)
@@ -466,6 +473,7 @@ class AdaptSessionRunner:
             self,
             windows: AdaptWindowTensors,
             split: AdaptWindowSplit,
+            allow_empty_feature_fallback: bool = True,
     ) -> tuple[FeatureScaler, RealBatchPool]:
         """Fit train-only scaler and build normalized train/smoke pools.
 
@@ -475,6 +483,8 @@ class AdaptSessionRunner:
             Native upload windows.
         split : AdaptWindowSplit
             Train / smoke indices.
+        allow_empty_feature_fallback : bool, optional
+            Legacy identity scaler on empty train features when True.
 
         Returns
         -------
@@ -485,10 +495,18 @@ class AdaptSessionRunner:
         """
         values = np.asarray(windows.values, dtype=np.float32)
         masks = np.asarray(windows.native_masks, dtype=np.float32)
-        scaler = FeatureScaler().fit(
-            values[split.train_idx],
-            masks[split.train_idx],
-        )
+        train_values = values[split.train_idx]
+        train_masks = masks[split.train_idx]
+        names = tuple(windows.feature_names)
+        if not allow_empty_feature_fallback:
+            _assert_train_feature_observed_rates(train_masks, names)
+        scaler = FeatureScaler(
+            options=FeatureScalerOptions(
+                allow_empty_feature_fallback=allow_empty_feature_fallback,
+                feature_names=names,
+                fit_slice_label="adapt train fraction",
+            ),
+        ).fit(train_values, train_masks)
         values_n = np.asarray(
             scaler.transform(values, masks),
             dtype=np.float32,
@@ -596,7 +614,7 @@ def _build_adapt_model(
     Returns
     -------
     ConditionalScoreNet
-        Model ready for capped DSM.
+        Model ready for capped DSM (adapt path is v1-only).
     """
     n_features = int(windows.values.shape[FEATURE_AXIS])
     template = ConditionalScoreNet(
@@ -612,7 +630,11 @@ def _build_adapt_model(
     base_path = Path(base_checkpoint)
     if not base_path.is_file():
         raise ValueError(f"base checkpoint not found: {base_path}")
-    return load_checkpoint(base_path, like=template)
+    # like=template is v1; cast keeps adapt_loop on ConditionalScoreNet.
+    return cast(
+        ConditionalScoreNet,
+        load_checkpoint(base_path, like=template),
+    )
 
 
 def _assert_fine_tune_allowed(
@@ -780,6 +802,35 @@ def _resolve_repo_path(path_str: str) -> Path:
     if path.is_absolute():
         return path
     return _REPO_ROOT / path
+
+
+def _assert_train_feature_observed_rates(
+        train_masks: np.ndarray,
+        feature_names: tuple[str, ...],
+) -> None:
+    """Reject train features below ``min_observed_rate_per_feature``.
+
+    Parameters
+    ----------
+    train_masks : numpy.ndarray
+        Train-slice native masks ``(N_train, T, F)``.
+    feature_names : tuple of str
+        Feature names aligned with axis ``F``.
+    """
+    observed = np.abs(train_masks - MASK_OBSERVED) < _MASK_TOL
+    rates = np.mean(observed.astype(np.float64), axis=(0, 1))
+    n_features = int(rates.shape[0])
+    names = feature_names
+    if len(names) != n_features:
+        names = tuple(f"f{idx}" for idx in range(n_features))
+    for feat_idx, rate in enumerate(rates):
+        if float(rate) < _MIN_OBSERVED_RATE_PER_FEATURE:
+            raise ValueError(
+                "adapt train fraction feature "
+                f"{names[feat_idx]!r} observed rate {float(rate):.4f} "
+                f"< min_observed_rate_per_feature="
+                f"{_MIN_OBSERVED_RATE_PER_FEATURE}"
+            )
 
 
 def _assert_observed_finite(values: np.ndarray, masks: np.ndarray) -> None:

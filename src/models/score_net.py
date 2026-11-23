@@ -7,13 +7,25 @@ ScoreNetConfig
 TimeConditioner
     Sinusoidal diffusion-time embedding projected to TCN hidden width.
 ConditionalScoreNet
-    Equinox dilated-TCN score model with mask / observation conditioning.
+    Legacy ``tcn_v1`` dilated-TCN score model (checkpoint-compatible).
+ResidualTCNBlock
+    One ``tcn_v2`` residual block with GroupNorm and FiLM.
+ConditionalScoreNetV2
+    ``tcn_v2`` residual TCN with per-block FiLM time conditioning.
 
 Functions
 ---------
 default_score_net_config
     Sensible M1 defaults for a given feature count ``F``.
+sinusoidal_time_embedding
+    Sinusoidal embedding of diffusion time (optional ``scale``).
+receptive_field
+    Temporal receptive field including the stem.
+build_score_net
+    Build ``tcn_v1`` or ``tcn_v2`` from ``ScoreNetConfig.arch``.
 """
+
+# pylint: disable=too-many-lines
 
 from __future__ import annotations
 
@@ -53,10 +65,11 @@ _OUT_KERNEL = 1
 _HALF = 2
 _LOG_TIME_PERIOD = 10000.0
 _INDEX_PI = jnp.pi
+_RESIDUAL_SCALE = 2.0 ** 0.5
 
 
 @dataclass(frozen=True)
-class ScoreNetConfig:
+class ScoreNetConfig:  # pylint: disable=too-many-instance-attributes
     """Hyperparameters for the conditional temporal score network.
 
     Public methods
@@ -85,7 +98,7 @@ class ScoreNetConfig:
     n_index_frequencies : int
         Number of sin/cos pairs for regular-grid index encoding along ``T``.
     arch : str
-        Architecture id (``tcn_v1`` legacy; ``tcn_v2`` reserved for WP3).
+        Architecture id (``tcn_v1`` legacy; ``tcn_v2`` for WP3).
     dilations : tuple of int or None
         Explicit dilations; ``None`` means derive from ``n_layers``.
     time_embed_scale : float
@@ -159,9 +172,17 @@ class ScoreNetConfig:
             raise ValueError(
                 f"norm_groups must be positive, got {self.norm_groups}"
             )
+        if (
+                self.norm == "group"
+                and self.hidden_channels % self.norm_groups != 0
+        ):
+            raise ValueError(
+                "hidden_channels must be divisible by norm_groups, "
+                f"got {self.hidden_channels} and {self.norm_groups}"
+            )
 
     def _validate_arch_options(self) -> None:
-        """Check arch enums and optional dilation schedule."""
+        """Check arch enums, dilation schedule, and arch-specific knobs."""
         if self.arch not in _ALLOWED_ARCH:
             raise ValueError(
                 f"arch must be one of {sorted(_ALLOWED_ARCH)}, "
@@ -177,16 +198,45 @@ class ScoreNetConfig:
                 f"norm must be one of {sorted(_ALLOWED_NORM)}, "
                 f"got {self.norm!r}"
             )
-        if self.dilations is None:
+        if self.dilations is not None:
+            if len(self.dilations) != self.n_layers:
+                raise ValueError(
+                    "len(dilations) must equal n_layers, "
+                    f"got {len(self.dilations)} vs {self.n_layers}"
+                )
+            if any(int(item) <= 0 for item in self.dilations):
+                raise ValueError(
+                    f"dilations must be positive, got {self.dilations!r}"
+                )
+        self._validate_arch_knob_honesty()
+
+    def _validate_arch_knob_honesty(self) -> None:
+        """Refuse knobs the selected arch does not implement."""
+        if self.arch == "tcn_v1":
+            if self.dilations is not None:
+                raise ValueError(
+                    "tcn_v1 ignores dilations; leave dilations=null "
+                    "(derived as 2**i from n_layers)"
+                )
+            if self.time_embed_scale != _DEFAULT_TIME_EMBED_SCALE:
+                raise ValueError(
+                    "tcn_v1 ignores time_embed_scale; use "
+                    f"{_DEFAULT_TIME_EMBED_SCALE}"
+                )
+            if self.time_cond != _DEFAULT_TIME_COND:
+                raise ValueError(
+                    "tcn_v1 only supports time_cond="
+                    f"{_DEFAULT_TIME_COND!r}"
+                )
+            if self.norm != _DEFAULT_NORM:
+                raise ValueError(
+                    f"tcn_v1 only supports norm={_DEFAULT_NORM!r}"
+                )
             return
-        if len(self.dilations) != self.n_layers:
+        if self.arch == "tcn_v2" and self.time_cond != "per_block":
             raise ValueError(
-                "len(dilations) must equal n_layers, "
-                f"got {len(self.dilations)} vs {self.n_layers}"
-            )
-        if any(int(item) <= 0 for item in self.dilations):
-            raise ValueError(
-                f"dilations must be positive, got {self.dilations!r}"
+                "tcn_v2 requires time_cond='per_block' "
+                f"(got {self.time_cond!r})"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -343,7 +393,7 @@ class TimeConditioner(eqx.Module):
         jax.Array
             Bias shaped ``(hidden_channels,)``.
         """
-        features = _sinusoidal_time_embedding(time, self.embed_dim)
+        features = sinusoidal_time_embedding(time, self.embed_dim)
         features = self.mlp(features)
         return self.to_hidden(jax.nn.silu(features))
 
@@ -530,6 +580,294 @@ class ConditionalScoreNet(eqx.Module):
         return jnp.swapaxes(score_ct, _CT_CHANNEL_AXIS, _CT_TIME_AXIS)
 
 
+@dataclass(frozen=True)
+class _ResidualBlockSpec:
+    """Ctor bundle for ``ResidualTCNBlock`` (keeps arity small)."""
+
+    hidden_channels: int
+    kernel_size: int
+    dilation: int
+    time_embed_dim: int
+    norm_groups: int  # 0 → skip GroupNorm
+
+
+class ResidualTCNBlock(eqx.Module):
+    """One v2 residual block: GN → SiLU → dilated → FiLM → GN → SiLU → 1×1.
+
+    Public methods
+    --------------
+    __call__
+        Apply the block to channels-first ``(C, T)`` with a time embedding.
+    output_channels
+        Return the hidden channel count.
+    """
+
+    norm1: eqx.nn.GroupNorm | None
+    conv_dilated: eqx.nn.Conv1d
+    film: eqx.nn.Linear
+    norm2: eqx.nn.GroupNorm | None
+    conv_1x1: eqx.nn.Conv1d
+
+    def __init__(self, key: jax.Array, spec: _ResidualBlockSpec) -> None:
+        """Build norms, dilated conv, FiLM, and 1×1 from ``spec``.
+
+        Parameters
+        ----------
+        key : jax.Array
+            PRNG key.
+        spec : _ResidualBlockSpec
+            Channel / kernel / dilation / FiLM / norm knobs.
+        """
+        keys = jax.random.split(key, 3)
+        channels = int(spec.hidden_channels)
+        if int(spec.norm_groups) > 0:
+            groups = int(spec.norm_groups)
+            self.norm1 = eqx.nn.GroupNorm(groups, channels)
+            self.norm2 = eqx.nn.GroupNorm(groups, channels)
+        else:
+            self.norm1 = None
+            self.norm2 = None
+        self.conv_dilated = _make_dilated_conv(
+            keys[0],
+            channels,
+            spec.kernel_size,
+            spec.dilation,
+        )
+        self.film = eqx.nn.Linear(
+            spec.time_embed_dim,
+            _HALF * channels,
+            key=keys[1],
+        )
+        self.conv_1x1 = eqx.nn.Conv1d(
+            channels,
+            channels,
+            kernel_size=_OUT_KERNEL,
+            padding="SAME",
+            key=keys[2],
+        )
+
+    def __call__(
+            self,
+            hidden: jnp.ndarray,
+            time_emb: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Residual block on channels-first ``hidden`` shaped ``(C, T)``.
+
+        Parameters
+        ----------
+        hidden : jax.Array
+            Activations ``(C, T)``.
+        time_emb : jax.Array
+            Time embedding vector ``(time_embed_dim,)``.
+
+        Returns
+        -------
+        jax.Array
+            Updated activations ``(C, T)``.
+        """
+        residual = hidden
+        out = hidden
+        if self.norm1 is not None:
+            out = self.norm1(out)
+        out = jax.nn.silu(out)
+        out = self.conv_dilated(out)
+        film_params = self.film(time_emb)
+        scale, shift = jnp.split(film_params, _HALF, axis=0)
+        # (1+γ) keeps init near-identity; plain γ flips/shrinks channels.
+        out = out * (1.0 + scale[:, None]) + shift[:, None]
+        if self.norm2 is not None:
+            out = self.norm2(out)
+        out = jax.nn.silu(out)
+        out = self.conv_1x1(out)
+        return (residual + out) / jnp.asarray(
+            _RESIDUAL_SCALE,
+            dtype=hidden.dtype,
+        )
+
+    def output_channels(self) -> int:
+        """Return the block channel width.
+
+        Returns
+        -------
+        int
+            ``conv_1x1`` output channels.
+        """
+        return int(self.conv_1x1.out_channels)
+
+
+class ConditionalScoreNetV2(eqx.Module):
+    """tcn_v2 residual TCN with per-block FiLM time conditioning.
+
+    ``ScoreNetConfig`` requires ``time_cond='per_block'`` for this arch.
+
+    Public methods
+    --------------
+    __call__
+        Batched forward ``(B, T, F)``.
+    count_parameters
+        Trainable parameter count.
+
+    Instance variables
+    ------------------
+    n_features : int
+        Output feature count ``F`` (static).
+    n_index_frequencies : int
+        Index-encoding frequency count (static).
+    time_embed_scale : float
+        Multiplier on raw ``t`` before sinusoids (static).
+    time_mlp : eqx.nn.MLP
+        MLP on sinusoidal time features (``in_size`` is embed dim).
+    in_conv : eqx.nn.Conv1d
+        Stem convolution over fused channels.
+    blocks : tuple of ResidualTCNBlock
+        Dilated residual body.
+    out_conv : eqx.nn.Conv1d
+        ``1 x 1`` projection back to ``F``.
+    """
+
+    n_features: int = eqx.field(static=True)
+    n_index_frequencies: int = eqx.field(static=True)
+    time_embed_scale: float = eqx.field(static=True)
+    time_mlp: eqx.nn.MLP
+    in_conv: eqx.nn.Conv1d
+    blocks: tuple[ResidualTCNBlock, ...]
+    out_conv: eqx.nn.Conv1d
+
+    def __init__(self, key: jax.Array, config: ScoreNetConfig) -> None:
+        """Build stem, time MLP, residual blocks, and output head.
+
+        Parameters
+        ----------
+        key : jax.Array
+            PRNG key.
+        config : ScoreNetConfig
+            Must have ``arch='tcn_v2'``.
+        """
+        config.validate()
+        if config.arch != "tcn_v2":
+            raise ValueError(
+                "ConditionalScoreNetV2 requires arch='tcn_v2', "
+                f"got {config.arch!r}"
+            )
+        self.n_features = int(config.n_features)
+        self.n_index_frequencies = int(config.n_index_frequencies)
+        self.time_embed_scale = float(config.time_embed_scale)
+
+        dilations = _resolved_dilations(config)
+        n_keys = 3 + len(dilations)
+        keys = jax.random.split(key, n_keys)
+        time_key, stem_key, out_key = keys[0], keys[1], keys[-1]
+        block_keys = keys[2:-1]
+
+        self.time_mlp = eqx.nn.MLP(
+            in_size=config.time_embed_dim,
+            out_size=config.time_embed_dim,
+            width_size=config.time_embed_dim * _TIME_MLP_WIDTH_MULT,
+            depth=_TIME_MLP_DEPTH,
+            key=time_key,
+        )
+        self.in_conv = eqx.nn.Conv1d(
+            config.in_channels(),
+            config.hidden_channels,
+            kernel_size=config.kernel_size,
+            padding="SAME",
+            key=stem_key,
+        )
+        norm_groups = (
+            int(config.norm_groups) if config.norm == "group" else 0
+        )
+        self.blocks = tuple(
+            ResidualTCNBlock(
+                block_keys[idx],
+                _ResidualBlockSpec(
+                    hidden_channels=config.hidden_channels,
+                    kernel_size=config.kernel_size,
+                    dilation=dilations[idx],
+                    time_embed_dim=config.time_embed_dim,
+                    norm_groups=norm_groups,
+                ),
+            )
+            for idx in range(len(dilations))
+        )
+        self.out_conv = eqx.nn.Conv1d(
+            config.hidden_channels,
+            config.n_features,
+            kernel_size=_OUT_KERNEL,
+            padding="SAME",
+            key=out_key,
+        )
+
+    def __call__(
+            self,
+            y_t: jnp.ndarray,
+            time: jnp.ndarray | float,
+            mask: jnp.ndarray,
+            x_obs: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Predict the conditional score for a batch of noisy windows.
+
+        Parameters
+        ----------
+        y_t : jax.Array
+            Noisy state shaped ``(B, T, F)``.
+        time : float or jax.Array
+            Diffusion time: scalar or shape ``(B,)``.
+        mask : jax.Array
+            Observation mask shaped ``(B, T, F)``.
+        x_obs : jax.Array
+            Observed context shaped ``(B, T, F)``.
+
+        Returns
+        -------
+        jax.Array
+            Score estimate shaped ``(B, T, F)``.
+        """
+        batch_size = int(y_t.shape[BATCH_AXIS])
+        time_b = _batch_time(time, batch_size)
+        return jax.vmap(self._forward_one)(y_t, time_b, mask, x_obs)
+
+    def count_parameters(self) -> int:
+        """Count trainable array parameters in this module.
+
+        Returns
+        -------
+        int
+            Total number of scalar parameters.
+        """
+        arrays = eqx.filter(self, eqx.is_array)
+        leaves = jax.tree_util.tree_leaves(arrays)
+        return int(sum(int(leaf.size) for leaf in leaves))
+
+    def _forward_one(
+            self,
+            y_t: jnp.ndarray,
+            time: jnp.ndarray,
+            mask: jnp.ndarray,
+            x_obs: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Unbatched forward on shapes ``(T, F)`` with scalar ``time``."""
+        seq_len = int(y_t.shape[_TF_TIME_AXIS])
+        context = x_obs * mask
+        index = _index_encoding(seq_len, self.n_index_frequencies)
+        fused = jnp.concatenate(
+            [y_t, mask, context, index],
+            axis=_TF_FEATURE_AXIS,
+        )
+        hidden = self.in_conv(
+            jnp.swapaxes(fused, _TF_TIME_AXIS, _TF_FEATURE_AXIS)
+        )
+        time_emb = sinusoidal_time_embedding(
+            time,
+            int(self.time_mlp.in_size),
+            scale=self.time_embed_scale,
+        )
+        time_emb = jax.nn.silu(self.time_mlp(time_emb))
+        for block in self.blocks:
+            hidden = block(hidden, time_emb)
+        score_ct = self.out_conv(hidden)
+        return jnp.swapaxes(score_ct, _CT_CHANNEL_AXIS, _CT_TIME_AXIS)
+
+
 def default_score_net_config(n_features: int) -> ScoreNetConfig:
     """Build default score-net hyperparameters for feature count ``F``.
 
@@ -546,6 +884,63 @@ def default_score_net_config(n_features: int) -> ScoreNetConfig:
     config = ScoreNetConfig(n_features=int(n_features))
     config.validate()
     return config
+
+
+def _resolved_dilations(config: ScoreNetConfig) -> tuple[int, ...]:
+    """Return explicit dilations or ``2**i`` from ``n_layers``."""
+    if config.dilations is not None:
+        return tuple(int(item) for item in config.dilations)
+    return tuple(
+        _DILATION_BASE ** layer_idx
+        for layer_idx in range(config.n_layers)
+    )
+
+
+def receptive_field(config: ScoreNetConfig) -> int:
+    """Temporal receptive field including the stem (dilation 1).
+
+    ``1 + (k-1) * (1 + sum(body_dilations))`` so legacy defaults → 17.
+
+    Parameters
+    ----------
+    config : ScoreNetConfig
+        Score-net hyperparameters.
+
+    Returns
+    -------
+    int
+        Receptive-field width in time steps.
+    """
+    config.validate()
+    body = _resolved_dilations(config)
+    span = 1 + sum(body)
+    return 1 + (int(config.kernel_size) - 1) * span
+
+
+def build_score_net(
+        key: jax.Array,
+        config: ScoreNetConfig,
+) -> ConditionalScoreNet | ConditionalScoreNetV2:
+    """Build ``tcn_v1`` or ``tcn_v2`` from ``config.arch``.
+
+    Parameters
+    ----------
+    key : jax.Array
+        PRNG key.
+    config : ScoreNetConfig
+        Validated architecture config.
+
+    Returns
+    -------
+    ConditionalScoreNet or ConditionalScoreNetV2
+        Constructed score network.
+    """
+    config.validate()
+    if config.arch == "tcn_v1":
+        return ConditionalScoreNet(key, config)
+    if config.arch == "tcn_v2":
+        return ConditionalScoreNetV2(key, config)
+    raise ValueError(f"unsupported arch={config.arch!r}")
 
 
 def _make_dilated_conv(
@@ -616,9 +1011,10 @@ def _batch_time(
     )
 
 
-def _sinusoidal_time_embedding(
+def sinusoidal_time_embedding(
         time: jnp.ndarray,
         embed_dim: int,
+        scale: float = _DEFAULT_TIME_EMBED_SCALE,
 ) -> jnp.ndarray:
     """Sinusoidal embedding of a scalar diffusion time.
 
@@ -628,6 +1024,8 @@ def _sinusoidal_time_embedding(
         Scalar time.
     embed_dim : int
         Even embedding dimension.
+    scale : float, optional
+        Multiplier on ``time`` before sinusoids (legacy ``1.0``).
 
     Returns
     -------
@@ -640,7 +1038,11 @@ def _sinusoidal_time_embedding(
         * jnp.arange(half, dtype=jnp.float32)
         / float(half)
     )
-    angles = jnp.asarray(time, dtype=jnp.float32) * frequencies
+    angles = (
+        jnp.asarray(time, dtype=jnp.float32)
+        * jnp.asarray(scale, dtype=jnp.float32)
+        * frequencies
+    )
     return jnp.concatenate([jnp.sin(angles), jnp.cos(angles)], axis=-1)
 
 

@@ -253,6 +253,14 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
     (cosine distance above a threshold).
   - Parameter count is logged; target ~150–400k for the M7.5 config.
 - **Done when:** the v2 net trains on the toy path and old v1 checkpoints still load.
+- **Done (2026-11-23):** `tcn_v2` beside frozen `tcn_v1`; FiLM `(1+γ)`;
+  scaled-`t` embed; stem-included RF; loader uses `build_score_net`;
+  `train_meta.receptive_field` filled. Decisions: v1 rejects non-legacy
+  knobs; v2 requires `per_block`; toy done-when injects the model;
+  `model.*` refuse stays until pre-WP7 wires `config.model` + sidecar write.
+  Numbers: M7.5 config **172550** params, RF **129**. Commands:
+  `pytest tests/test_wp3_score_net_v2.py -q` → **16 passed**;
+  `pytest -q` → **211 passed** in ~125s.
 
 ### WP4 — Training hygiene: EMA, selection by imputation, masks, schedule (findings 4, 9)
 - **EMA:** keep an EMA copy of the model weights (`optax.ema` or a manual

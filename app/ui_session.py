@@ -67,7 +67,7 @@ from app.session_impute import (
     SessionImputeRequest,
     SessionImputer,
 )
-from app.window_adapter import AdaptedWindows, adapt_validated_frame
+from app.window_adapter import AdaptedWindows, adapt_exact_frame
 
 _MASK_NONE = "none"
 _SOURCE_BUNDLED = "Try the sample dataset"
@@ -548,7 +548,7 @@ def build_bundled_payload(config: AppM4Config) -> UiSessionPayload | None:
         return None
     frame = validate_upload_csv(config.paths.sample_csv, default_app_schema())
     outcome = AdaptOutcome(
-        windows=adapt_validated_frame(
+        windows=adapt_exact_frame(
             frame,
             config.schema.window_request(config.smoke.max_windows),
         ),
@@ -623,7 +623,7 @@ def validate_and_adapt_upload(
     """
     if mode == MODE_EXACT_BEIJING:
         frame = validate_upload_csv(path, default_app_schema())
-        windows = adapt_validated_frame(
+        windows = adapt_exact_frame(
             frame,
             config.schema.window_request(config.smoke.max_windows),
         )

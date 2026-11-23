@@ -1021,21 +1021,25 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 - Multi-seed bench runner (WP7; `bench_m7_5.yaml` lists seeds for later)
 - WP1+ consume flags in loss/sampler/net (partially done: `observed_input` in loss; `replace_noised` in sampler drift, not yet on train-val/bench/app paths)
 
-## App honest export (WP-B3)
+## WP-B2 ingest correctness
 
-- Download merges with **`m_native`** (not demo ``m_eval``). Charts / quick-check
-  metrics still use ``m_eval``. Long-sample CSV freezes native cells to
-  ``windows.values`` before export so demo hides cannot look "observed".
-- Pad cells (``row_index == -1``) are omitted from wide and long downloads.
-- ``row_index`` is 0-based on the series that was windowed: Exact = input row
-  order; Flexible = post-hourly-bin grid (not raw CSV row count when binning
-  changes length). Values are float32 after ingest (not CSV text bytes).
-- Wide CSV: ``row_index``, optional ``timestamp`` / ``entity``, features,
-  ``<feature>_imputed``.
-- Long CSV: ``sample_id``, ``row_index``, optional ``timestamp``, ``feature``,
-  ``value``, ``is_imputed``.
-- Window-cap truncation: UI warning names the active knob
-  (``smoke.max_windows`` pretrained, ``window.max_windows`` / ``--max-windows``
-  adapt/CLI). Partial filenames:
-  ``timefill_mean_fill_partial_rows_{start}-{end}.csv`` (UI) /
-  ``mean_fill_partial_rows_{start}-{end}.csv`` (CLI).
+- **Multi-entity:** `entity` / `site` / `station` column scanned on all rows;
+  more than one distinct non-blank label → reject (list entities; filter to
+  one site). Blank cells ignored. No auto-merge / picker.
+- **Non-finite:** `inf` / `-inf` / overflow (`1e999`) and values outside
+  float32 range rejected at parse with column + data-row context. NaN / NA
+  tokens stay native missing.
+- **Hourly bin:** still **last observed** per feature in a bin (unchanged).
+  Sub-hourly rows (e.g. 30-minute) bin normally. Preview warns when any
+  hour has ≥2 raw rows (`"N hours had multiple rows; kept last value"`).
+  Duplicate-hour **reject** share = (hours that contain an **exact
+  same-second** repeated timestamp) / (dense grid hours from first→last
+  stamp); reject if share `> 0.01` (fixed constant; promote to config if
+  a dial is needed). Soft below-threshold exact duplicates still last-win
+  (with the multi-row warning above).
+- **Exact Beijing:** if `timestamp` is present → same hourly bin + duplicate
+  reject as Flexible, then shared pad/cut; **no** Flexible `min_rows` /
+  observed-rate floors. If timestamps are absent → CSV row order (UI must
+  not claim hourly resampling).
+- User-facing wording should stay consistent with WP5 empty-feature /
+  observed-rate rejects (name the field; tell the user how to fix).

@@ -603,6 +603,14 @@ the audit. Audit items A5, A8, A9 and A11 are in Track A (WP0 / WP5).
   file is binned or rejected per the rule; `inf` and `1e999` raise with
   row/column.
 - **Done when:** none of the audit's confirmed repros produce windows silently.
+- **Done (2026-11-23):** Multi-entity reject (`entity`/`site`/`station`, all
+  rows); non-finite + float32-range reject; Exact bins when timestamps exist
+  via `adapt_exact_frame` (no Flexible `min_rows` floors); multi-row-hour
+  preview warnings; Exact UI copy fixed. Decisions: keep **last** in-bin (not
+  mean); exact-same-second dup share `> 0.01` rejects (hardcoded); sub-hourly
+  bins with a warn. Command:
+  `py -m pytest tests/test_wp_b2_ingest_correctness.py tests/test_app_schema_validate.py tests/test_flexible_ingest.py tests/test_preview_ingest.py tests/test_app_window_adapter.py -q`
+  → **50 passed**.
 
 #### WP-B3 — Honest export (B4a, B4b, B4c, B18)
 - **Prerequisite: carry provenance through windowing.** Extend

@@ -404,12 +404,15 @@ def _render_upload_guidance(config: AppM4Config) -> None:
             f"`site`; drop meteo columns (TEMP, PRES, …).\n\n"
             f"**CSV shape for Exact impute**\n\n"
             f"- **Required columns (exact spelling):** `{feature_list}`\n"
-            f"- **Recommended:** `timestamp` (hourly-style wall clock)\n"
-            f"- **Optional:** `entity` or `site` (display / grouping only)\n"
+            f"- **Recommended:** `timestamp` (hourly wall clock; sorted and "
+            f"hourly-binned when present)\n"
+            f"- **Optional:** `entity` or `site` (**single site only**; "
+            f"multi-site files are rejected)\n"
             f"- **Missing values:** empty cells or NaN "
-            f"(do not rely on zeros to mean missing)\n"
-            f"- **Shape:** contiguous rows; the app cuts segments of length "
-            f"**{seq_len}** (short tails are padded)\n"
+            f"(do not rely on zeros to mean missing; no `inf`)\n"
+            f"- **Shape:** with timestamps, hourly grid then "
+            f"**{seq_len}**-step windows; without timestamps, CSV row order "
+            f"(short tails are padded)\n"
             f"- **Flexible uploads:** preview schema / missingness; then "
             f"**Run adapt** to unlock session impute (M7)"
         )
@@ -448,6 +451,8 @@ def _render_preview_panel(payload: UiSessionPayload) -> None:
             st.error(preview.adapt.adapt_message)
         else:
             st.info(preview.adapt.adapt_message)
+    for warning in preview.adapt.warnings:
+        st.warning(warning)
     st.caption("Native missingness in your file (before simulated gaps):")
     st.dataframe(payload.missingness_table(), width="stretch")
 
@@ -628,7 +633,8 @@ def _render_about_this_model(config: AppM4Config) -> None:
             f"(hourly data from 12 sites, 2013–2017; zip "
             f"`{_PRSA_ZIP_NAME}`). "
             f"It fills the six pollutants **{feature_list}** on fixed "
-            f"**{seq_len}-step** windows after hourly resampling.\n\n"
+            f"**{seq_len}-step** windows (hourly bin when a `timestamp` "
+            f"column is present; otherwise CSV row order).\n\n"
             f"**Exact Beijing** runs gap-filling with pretrained weights "
             f"(no training). **Flexible** schemas preview first; **Run "
             f"adapt** trains a smoke-capped **session** model under "

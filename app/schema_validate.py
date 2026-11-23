@@ -42,7 +42,9 @@ _FEATURE_AXIS = 1
 _PERCENT = 100.0
 _MASK_COMPARE_TOL = 1e-6
 _DEFAULT_TIMESTAMP = "timestamp"
-_DEFAULT_ENTITY_COLUMNS = ("entity", "site")
+_DEFAULT_ENTITY_COLUMNS = ("entity", "site", "station")
+# IEEE float32 max (pylint cannot see ``np.finfo(...).max``).
+_FLOAT32_ABS_MAX = 3.4028234663852886e38
 
 
 @dataclass(frozen=True)
@@ -300,7 +302,7 @@ def validate_upload_rows(
         )
         _fill_feature_row(row, schema, target)
     timestamps = _parse_timestamps(rows, schema, header)
-    entity_id = _parse_entity_id(rows[0], schema, header)
+    entity_id = _parse_entity_id(rows, schema, header)
     return ValidatedFrame(
         values=values,
         native_mask=masks,
@@ -408,8 +410,13 @@ def _fill_feature_row(
         try:
             value, observed = _parse_numeric_cell(raw)
         except ValueError as exc:
+            kind = (
+                "non-finite"
+                if "non-finite" in str(exc)
+                else "non-numeric"
+            )
             raise ValueError(
-                f"non-numeric value in column {name!r} at data row "
+                f"{kind} value in column {name!r} at data row "
                 f"{target.row_idx + 1}: {raw!r}"
             ) from exc
         target.values_out[feat_idx] = value
@@ -447,6 +454,9 @@ def _parse_numeric_cell(raw: str) -> tuple[float, float]:
         raise ValueError(f"non-numeric cell: {raw!r}") from exc
     if np.isnan(number):
         return float(MISSING_VALUE_SENTINEL), float(MASK_MISSING)
+    # Reject float32 overflow here: buffers are float32 and would store ±inf.
+    if not np.isfinite(number) or abs(number) > _FLOAT32_ABS_MAX:
+        raise ValueError(f"non-finite cell: {raw!r}")
     return float(number), float(MASK_OBSERVED)
 
 
@@ -490,16 +500,19 @@ def _parse_timestamps(
 
 
 def _parse_entity_id(
-        first_row: dict[str, str],
+        rows: list[dict[str, str]],
         schema: AppSchemaSpec,
         header: set[str],
 ) -> str | None:
-    """Return the first present entity / site column value, if any.
+    """Return the sole entity / site label, or ``None`` if absent.
+
+    Blank cells are ignored. More than one distinct non-blank value is
+    rejected (no silent multi-site merge).
 
     Parameters
     ----------
-    first_row : dict of str to str
-        First data row (entity is treated as frame-level in M4).
+    rows : list of dict
+        All CSV data rows.
     schema : AppSchemaSpec
         Entity column aliases.
     header : set of str
@@ -508,12 +521,76 @@ def _parse_entity_id(
     Returns
     -------
     str or None
-        Entity label, or ``None`` if absent / blank.
+        Entity label, or ``None`` if the column is absent / all blank.
+
+    Raises
+    ------
+    ValueError
+        If more than one distinct non-blank entity appears.
+    """
+    column = _first_entity_column(schema, header)
+    if column is None:
+        return None
+    distinct = _distinct_entity_labels(rows, column)
+    if not distinct:
+        return None
+    if len(distinct) > 1:
+        listed = ", ".join(repr(label) for label in distinct)
+        raise ValueError(
+            f"CSV has multiple entities in column {column!r}: {listed}. "
+            "Filter the file to a single site before upload."
+        )
+    return distinct[0]
+
+
+def _first_entity_column(
+        schema: AppSchemaSpec,
+        header: set[str],
+) -> str | None:
+    """Return the first entity alias present in the header.
+
+    Parameters
+    ----------
+    schema : AppSchemaSpec
+        Entity column aliases.
+    header : set of str
+        CSV header field names.
+
+    Returns
+    -------
+    str or None
+        Matched column name, or ``None``.
     """
     for column in schema.entity_columns:
         if column in header:
-            text = str(first_row.get(column, "")).strip()
-            if text:
-                return text
-            return None
+            return column
     return None
+
+
+def _distinct_entity_labels(
+        rows: list[dict[str, str]],
+        column: str,
+) -> list[str]:
+    """Collect distinct non-blank entity labels in first-seen order.
+
+    Parameters
+    ----------
+    rows : list of dict
+        CSV data rows.
+    column : str
+        Entity column name.
+
+    Returns
+    -------
+    list of str
+        Unique non-blank labels.
+    """
+    distinct: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        text = str(row.get(column, "")).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        distinct.append(text)
+    return distinct

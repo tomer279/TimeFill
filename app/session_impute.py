@@ -342,16 +342,16 @@ class ImputeContextArrays:
     n_windows
         Batch size ``B``.
     observed_cell_count
-        Count of ``m_eval == 1`` cells.
+        Count of ``m_native == 1`` cells kept in the download.
 
     Instance variables
     ------------------
     observations : numpy.ndarray
         Original-unit context ``(B, T, F)`` before fill merge.
     mean_fill : numpy.ndarray
-        Export tensor ``(B, T, F)``; observed cells preserved.
+        Export tensor ``(B, T, F)``; native observed cells preserved.
     m_eval : numpy.ndarray
-        Composed conditioning mask used for the run.
+        Composed conditioning mask used for the run / charts.
     m_native : numpy.ndarray
         Native / pad mask before demo corruption.
     """
@@ -372,14 +372,14 @@ class ImputeContextArrays:
         return int(self.mean_fill.shape[BATCH_AXIS])
 
     def observed_cell_count(self) -> int:
-        """Count preserved observed cells under ``m_eval``.
+        """Count native observed cells kept in the download mean fill.
 
         Returns
         -------
         int
-            Number of cells with ``m_eval == 1``.
+            Number of cells with ``m_native == 1``.
         """
-        observed = np.abs(self.m_eval - MASK_OBSERVED) < _MASK_COMPARE_TOL
+        observed = np.abs(self.m_native - MASK_OBSERVED) < _MASK_COMPARE_TOL
         return int(np.sum(observed))
 
 
@@ -438,7 +438,7 @@ class SessionImputeResult:
     n_windows
         Batch size ``B``.
     observed_cell_count
-        Count of ``m_eval == 1`` cells preserved in the mean fill.
+        Count of ``m_native == 1`` cells preserved in the mean fill.
 
     Instance variables
     ------------------
@@ -465,12 +465,12 @@ class SessionImputeResult:
         return self.context.n_windows()
 
     def observed_cell_count(self) -> int:
-        """Count preserved observed cells under ``m_eval``.
+        """Count native observed cells preserved in the mean fill.
 
         Returns
         -------
         int
-            Number of cells with ``m_eval == 1``.
+            Number of cells with ``m_native == 1``.
         """
         return self.context.observed_cell_count()
 
@@ -752,10 +752,11 @@ class SessionImputer:
         )
         prepared = self._prepare_observations(request)
         tensors = self._impute_and_restore(prepared, plan)
+        # Download keeps native observed cells; demo m_eval is charts-only.
         mean_fill = merge_mean_fill(
             prepared.observations,
             tensors.mean,
-            prepared.m_eval,
+            prepared.m_native,
         )
         return SessionImputeResult(
             tensors=tensors,

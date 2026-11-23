@@ -662,6 +662,13 @@ the audit. Audit items A5, A8, A9 and A11 are in Track A (WP0 / WP5).
 - **Done when:** the download for any input has the same rows as the input
   (or is clearly marked partial under the window cap) and differs only in
   previously missing cells.
+- **Done (2026-11-21):** `WindowPadInfo` provenance; download merge on
+  `m_native`; pads dropped; wide `*_imputed` + long `row_index`/`is_imputed`
+  (native draws frozen); UI/CLI partial filenames + knob-named warnings;
+  Fill stores windows for export. Decisions: truncate+warn (no batching);
+  shared `mean_fill_download_filename(stem=…)`; Flexible `row_index` =
+  post-bin grid. Commands: `pytest tests/test_wp_b3_honest_export.py -q`
+  → **24 passed**; `pytest -q` → **181 passed** (~91s).
 - **Coordination:** WP8's optional overlapping-window stitching changes how
   windows map back to rows. Whichever of WP-B3 / WP8-stitching lands second
   must rerun these tests.

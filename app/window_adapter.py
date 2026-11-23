@@ -21,13 +21,15 @@ Padded cells are never ground-truth imputation targets.
 Classes
 -------
 WindowAdaptRequest
-    Frozen window length and optional ``max_windows`` cap.
+    Window length and optional ``max_windows``.
+WindowPadInfo
+    Pad/cap provenance for honest export.
 AdaptedWindows
-    Stacked ``(B, T, F)`` values / masks ready for ``FeatureScaler.transform``.
+    Stacked ``(B, T, F)`` values/masks.
 IngestRejectPolicy
-    M6 flexible reject thresholds (min rows / observed rates).
+    M6 flexible reject thresholds.
 FlexibleAdaptRequest
-    Flexible-only knobs: window request, reject policy, optional hourly bin.
+    Flexible window/reject/bin knobs.
 
 Functions
 ---------
@@ -36,13 +38,13 @@ adapt_validated_frame
 adapt_exact_frame
     Exact path: optional hourly bin, then ``adapt_validated_frame``.
 default_ingest_reject_policy
-    Build ASSUMPTIONS defaults from ``seq_len``.
+    ASSUMPTIONS defaults from ``seq_len``.
 bin_validated_frame_hourly
     Hourly last-value-in-bin grid when timestamps are present.
 multi_row_hour_warnings
     Preview warnings when hours contain multiple raw rows.
 adapt_flexible_frame
-    Optional bin → reject → shared ``adapt_validated_frame``.
+    Bin → reject → shared pad.
 """
 
 from __future__ import annotations
@@ -120,6 +122,79 @@ class WindowAdaptRequest:
 
 
 @dataclass(frozen=True)
+class WindowPadInfo:
+    """Pad / cap provenance for honest download export.
+
+    Public methods
+    --------------
+    is_partial
+        True when fewer windows were kept than ``uncapped_n_windows``.
+    take
+        Slice provenance along the batch axis (e.g. smoke indices).
+
+    Instance variables
+    ------------------
+    valid_len : numpy.ndarray
+        ``(B,)`` real timesteps per window (excludes right-pad).
+    row_index : numpy.ndarray
+        ``(B, T)`` source/grid row; ``-1`` on pad cells.
+    timestamps : numpy.ndarray or None
+        ``(B, T)`` wall-clock labels; ``NaT`` / ``None`` on pad when present.
+    source_n_rows : int or None
+        Grid length before window/cap.
+    uncapped_n_windows : int or None
+        Window count before ``max_windows`` slice.
+    """
+
+    valid_len: np.ndarray
+    row_index: np.ndarray
+    timestamps: np.ndarray | None = None
+    source_n_rows: int | None = None
+    uncapped_n_windows: int | None = None
+
+    def is_partial(self, n_kept: int) -> bool:
+        """Return whether the window cap dropped trailing windows.
+
+        Parameters
+        ----------
+        n_kept : int
+            Number of windows retained after the cap.
+
+        Returns
+        -------
+        bool
+            True when ``n_kept`` is below ``uncapped_n_windows``.
+        """
+        if self.uncapped_n_windows is None:
+            return False
+        return int(n_kept) < int(self.uncapped_n_windows)
+
+    def take(self, indices: np.ndarray) -> "WindowPadInfo":
+        """Return provenance for a batch-axis subset.
+
+        Parameters
+        ----------
+        indices : numpy.ndarray
+            Window indices to keep.
+
+        Returns
+        -------
+        WindowPadInfo
+            Sliced ``valid_len`` / ``row_index`` / timestamps.
+        """
+        stamps = None
+        if self.timestamps is not None:
+            stamps = np.asarray(self.timestamps[indices])
+        return WindowPadInfo(
+            valid_len=np.asarray(self.valid_len[indices]),
+            row_index=np.asarray(self.row_index[indices]),
+            timestamps=stamps,
+            source_n_rows=self.source_n_rows,
+            uncapped_n_windows=self.uncapped_n_windows,
+        )
+
+
+@dataclass(frozen=True)
 class AdaptedWindows:
     """Stacked fixed-length windows under the M1/M2 tensor contract.
 
@@ -129,6 +204,8 @@ class AdaptedWindows:
         Batch size ``B``.
     as_batch
         Pack into a JAX ``TimeSeriesBatch``.
+    is_partial
+        True when ``max_windows`` dropped trailing windows.
 
     Instance variables
     ------------------
@@ -140,12 +217,40 @@ class AdaptedWindows:
         Feature axis labels (frozen order).
     entity_ids : numpy.ndarray
         Object / unicode entity id per window, shape ``(B,)``.
+    pad : WindowPadInfo or None
+        Pad / cap provenance; ``None`` for legacy hand-built batches.
     """
 
     values: np.ndarray
     native_mask: np.ndarray
     feature_names: tuple[str, ...]
     entity_ids: np.ndarray
+    pad: WindowPadInfo | None = None
+
+    @property
+    def valid_len(self) -> np.ndarray | None:
+        """``(B,)`` real lengths, or ``None`` when provenance is absent."""
+        return None if self.pad is None else self.pad.valid_len
+
+    @property
+    def row_index(self) -> np.ndarray | None:
+        """``(B, T)`` source rows, or ``None`` when provenance is absent."""
+        return None if self.pad is None else self.pad.row_index
+
+    @property
+    def timestamps(self) -> np.ndarray | None:
+        """``(B, T)`` timestamps, or ``None`` when absent."""
+        return None if self.pad is None else self.pad.timestamps
+
+    @property
+    def source_n_rows(self) -> int | None:
+        """Source/grid length before window/cap, if known."""
+        return None if self.pad is None else self.pad.source_n_rows
+
+    @property
+    def uncapped_n_windows(self) -> int | None:
+        """Window count before ``max_windows``, if known."""
+        return None if self.pad is None else self.pad.uncapped_n_windows
 
     def n_windows(self) -> int:
         """Return the number of windows ``B``.
@@ -169,6 +274,18 @@ class AdaptedWindows:
             x=jnp.asarray(self.values, dtype=jnp.float32),
             m=jnp.asarray(self.native_mask, dtype=jnp.float32),
         )
+
+    def is_partial(self) -> bool:
+        """Return whether the window cap dropped trailing windows.
+
+        Returns
+        -------
+        bool
+            True when fewer windows were kept than the uncapped cut.
+        """
+        if self.pad is None:
+            return False
+        return self.pad.is_partial(self.n_windows())
 
 
 @dataclass(frozen=True)
@@ -609,15 +726,32 @@ def adapt_validated_frame(
             f"{n_features} features but feature_names has "
             f"{len(frame.feature_names)}"
         )
-    value_blocks, mask_blocks = _cut_padded_windows(
+    cut = _cut_padded_windows(
         frame.values,
         frame.native_mask,
         request.seq_len,
+        frame.timestamps,
     )
+    uncapped_n_windows = len(cut[0])
     max_windows = request.effective_max_windows()
     if max_windows is not None:
-        value_blocks = value_blocks[:max_windows]
-        mask_blocks = mask_blocks[:max_windows]
+        cut = _truncate_cut(cut, max_windows)
+    return _adapted_from_cut(
+        cut,
+        frame,
+        request.seq_len,
+        uncapped_n_windows,
+    )
+
+
+def _adapted_from_cut(
+        cut: _CutBlocks,
+        frame: ValidatedFrame,
+        seq_len: int,
+        uncapped_n_windows: int,
+) -> AdaptedWindows:
+    """Stack cut blocks into ``AdaptedWindows`` with pad provenance."""
+    value_blocks, mask_blocks, valid_lens, row_blocks, stamp_blocks = cut
     entity_label = frame.entity_id if frame.entity_id is not None else ""
     entity_ids = np.asarray(
         [entity_label] * len(value_blocks),
@@ -625,12 +759,26 @@ def adapt_validated_frame(
     )
     stacked_values = np.stack(value_blocks, axis=BATCH_AXIS).astype(np.float32)
     stacked_masks = np.stack(mask_blocks, axis=BATCH_AXIS).astype(np.float32)
-    _assert_window_rank3(stacked_values, request.seq_len, n_features)
+    _assert_window_rank3(
+        stacked_values,
+        seq_len,
+        frame.n_features(),
+    )
+    stacked_stamps = None
+    if stamp_blocks is not None:
+        stacked_stamps = np.stack(stamp_blocks, axis=BATCH_AXIS)
     return AdaptedWindows(
         values=stacked_values,
         native_mask=stacked_masks,
         feature_names=frame.feature_names,
         entity_ids=entity_ids,
+        pad=WindowPadInfo(
+            valid_len=np.asarray(valid_lens, dtype=np.int64),
+            row_index=np.stack(row_blocks, axis=BATCH_AXIS),
+            timestamps=stacked_stamps,
+            source_n_rows=int(frame.n_rows()),
+            uncapped_n_windows=int(uncapped_n_windows),
+        ),
     )
 
 
@@ -662,11 +810,34 @@ def _assert_window_rank3(
         )
 
 
+_CutBlocks = tuple[
+    list[np.ndarray],
+    list[np.ndarray],
+    list[int],
+    list[np.ndarray],
+    list[np.ndarray] | None,
+]
+
+
+def _truncate_cut(cut: _CutBlocks, max_windows: int) -> _CutBlocks:
+    """Keep the leading ``max_windows`` blocks from a pad cut."""
+    values, masks, lengths, rows, stamps = cut
+    stamps_out = None if stamps is None else stamps[:max_windows]
+    return (
+        values[:max_windows],
+        masks[:max_windows],
+        lengths[:max_windows],
+        rows[:max_windows],
+        stamps_out,
+    )
+
+
 def _cut_padded_windows(
         values: np.ndarray,
         native_mask: np.ndarray,
         seq_len: int,
-) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        timestamps: np.ndarray | None = None,
+) -> _CutBlocks:
     """Cut non-overlapping windows; right-pad short / remainder chunks.
 
     Parameters
@@ -677,31 +848,83 @@ def _cut_padded_windows(
         Float32 ``(L, F)`` native masks.
     seq_len : int
         Window length ``T``.
+    timestamps : numpy.ndarray or None
+        Optional length-``L`` timestamps to window with the same pad policy.
 
     Returns
     -------
-    value_blocks : list of numpy.ndarray
-        Each ``(T, F)``.
-    mask_blocks : list of numpy.ndarray
-        Each ``(T, F)``.
+    _CutBlocks
+        Value / mask / valid_len / row_index / optional timestamp blocks.
     """
     n_rows = int(values.shape[_ROW_AXIS])
-    n_features = int(values.shape[_FEATURE_AXIS_LF])
     value_blocks: list[np.ndarray] = []
     mask_blocks: list[np.ndarray] = []
+    valid_lens: list[int] = []
+    row_blocks: list[np.ndarray] = []
+    stamp_blocks: list[np.ndarray] | None = (
+        [] if timestamps is not None else None
+    )
     start = 0
     while start < n_rows:
-        stop = min(start + seq_len, n_rows)
-        chunk_values = values[start:stop]
-        chunk_mask = native_mask[start:stop]
-        pad = seq_len - int(chunk_values.shape[_ROW_AXIS])
-        if pad > 0:
-            chunk_values = _right_pad_values(chunk_values, pad, n_features)
-            chunk_mask = _right_pad_mask(chunk_mask, pad, n_features)
-        value_blocks.append(chunk_values)
-        mask_blocks.append(chunk_mask)
+        chunk = _pad_one_window(
+            values,
+            native_mask,
+            timestamps,
+            start,
+            seq_len,
+        )
+        value_blocks.append(chunk[0])
+        mask_blocks.append(chunk[1])
+        valid_lens.append(chunk[2])
+        row_blocks.append(chunk[3])
+        if stamp_blocks is not None and chunk[4] is not None:
+            stamp_blocks.append(chunk[4])
         start += seq_len
-    return value_blocks, mask_blocks
+    return (
+        value_blocks,
+        mask_blocks,
+        valid_lens,
+        row_blocks,
+        stamp_blocks,
+    )
+
+
+def _pad_one_window(
+        values: np.ndarray,
+        native_mask: np.ndarray,
+        timestamps: np.ndarray | None,
+        start: int,
+        seq_len: int,
+) -> tuple[np.ndarray, np.ndarray, int, np.ndarray, np.ndarray | None]:
+    """Build one right-padded window and its provenance rows/stamps."""
+    stop = min(start + seq_len, int(values.shape[_ROW_AXIS]))
+    real_len = stop - start
+    n_features = int(values.shape[_FEATURE_AXIS_LF])
+    chunk_values = values[start:stop]
+    chunk_mask = native_mask[start:stop]
+    row_idx = np.full(seq_len, _PAD_ROW_INDEX, dtype=np.int64)
+    row_idx[:real_len] = np.arange(start, stop, dtype=np.int64)
+    pad = seq_len - real_len
+    if pad > 0:
+        chunk_values = _right_pad_values(chunk_values, pad, n_features)
+        chunk_mask = _right_pad_mask(chunk_mask, pad, n_features)
+    stamps = None
+    if timestamps is not None:
+        stamps = _right_pad_timestamps(timestamps[start:stop], pad)
+    return chunk_values, chunk_mask, real_len, row_idx, stamps
+
+
+def _right_pad_timestamps(chunk: np.ndarray, pad: int) -> np.ndarray:
+    """Right-pad timestamps with ``NaT`` / ``None``."""
+    stamps = np.asarray(chunk)
+    if pad <= 0:
+        return stamps
+    if np.issubdtype(stamps.dtype, np.datetime64):
+        pad_block = np.full(pad, np.datetime64("NaT"), dtype=stamps.dtype)
+    else:
+        pad_block = np.full(pad, None, dtype=object)
+        stamps = stamps.astype(object)
+    return np.concatenate([stamps, pad_block], axis=0)
 
 
 def _right_pad_values(
@@ -709,22 +932,7 @@ def _right_pad_values(
         pad: int,
         n_features: int,
 ) -> np.ndarray:
-    """Right-pad a ``(L, F)`` value chunk with the missing sentinel.
-
-    Parameters
-    ----------
-    chunk : numpy.ndarray
-        Leading real rows.
-    pad : int
-        Number of pad rows.
-    n_features : int
-        Feature count ``F``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Length-``T`` value window.
-    """
+    """Right-pad values with the missing sentinel."""
     pad_block = np.full(
         (pad, n_features),
         float(MISSING_VALUE_SENTINEL),
@@ -738,22 +946,7 @@ def _right_pad_mask(
         pad: int,
         n_features: int,
 ) -> np.ndarray:
-    """Right-pad a ``(L, F)`` mask chunk with ``MASK_MISSING``.
-
-    Parameters
-    ----------
-    chunk : numpy.ndarray
-        Leading real rows.
-    pad : int
-        Number of pad rows.
-    n_features : int
-        Feature count ``F``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Length-``T`` mask window.
-    """
+    """Right-pad masks with ``MASK_MISSING``."""
     pad_block = np.full(
         (pad, n_features),
         float(MASK_MISSING),

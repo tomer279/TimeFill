@@ -1,21 +1,9 @@
 """Milestone 4 / 6 / 7 Streamlit product UI.
 
-Sidebar demo-mask / ``K`` / solver / quantile knobs; main pane upload or
-bundled sample → schema / missingness preview → optional M7 Run adapt →
-reverse-SDE impute when the gate allows → Plotly charts → mean-fill
-download.
+Upload or bundled sample → preview → optional M7 adapt → Fill → charts /
+honest CSV download. Session types live in ``app.ui_session``.
 
-Exact Beijing (bundled sample + exact-schema upload) remains the
-zero-train pretrained impute path. Flexible uploads preview first; Run
-adapt binds a session checkpoint/scaler under ``artifacts/m7/`` and lifts
-the impute gate (ASSUMPTIONS M7). Irregular wall-clock SDE dynamics remain
-deferred.
-
-Session types and CSV → payload assembly live in ``app.ui_session``.
-
-Launch
-------
-streamlit run app/streamlit_app.py
+Launch: ``streamlit run app/streamlit_app.py``.
 
 Functions
 ---------
@@ -43,6 +31,7 @@ from app.adapt_session_ui import (
     SESSION_FEATURES_KEY,
     SESSION_RESULT_DIGEST_KEY,
     SESSION_RESULT_KEY,
+    SESSION_RESULT_WINDOWS_KEY,
     AdaptRunRequest,
     BoundAdaptSession,
     caps_display_from_config,
@@ -55,12 +44,17 @@ from app.adapt_session_ui import (
 )
 from app.demo_eval_smoke import DemoEvalSmokeRequest, run_demo_eval_smoke
 from app.export_frames import (
-    MeanFillExportRequest,
-    SampleExportRequest,
+    covered_row_range,
     dataframe_to_csv_bytes,
     mean_fill_dataframe,
+    mean_fill_download_filename,
+    mean_fill_request_from_windows,
+    sample_request_from_windows,
     samples_long_dataframe,
+    samples_long_download_filename,
+    truncation_warning_message,
 )
+from app.window_adapter import AdaptedWindows
 from app.m4_config import AppM4Config, load_app_m4_config
 from app.plot_impute import (
     SeriesPlotRequest,
@@ -79,7 +73,6 @@ from app.ui_session import (
     build_upload_payload_from_bytes,
     refresh_impute_gate,
 )
-from app.window_adapter import AdaptedWindows
 from src.data.adapt_config import (
     AdaptCliOverrides,
     AdaptLoopCliOverrides,
@@ -117,7 +110,10 @@ _SESSION_RESULT_KEY = SESSION_RESULT_KEY
 _SESSION_FEATURES_KEY = SESSION_FEATURES_KEY
 _SESSION_ADAPT_KEY = SESSION_ADAPT_KEY
 _SESSION_RESULT_DIGEST_KEY = SESSION_RESULT_DIGEST_KEY
+_SESSION_RESULT_WINDOWS_KEY = SESSION_RESULT_WINDOWS_KEY
 _SESSION_UPLOAD_DIGEST_KEY = "m7_upload_content_digest"
+_CAP_KNOB_SMOKE = "smoke.max_windows"
+_CAP_KNOB_ADAPT = "window.max_windows / --max-windows"
 _MODE_SCRATCH = "scratch"
 _MIN_SEQ_LEN = 2
 _DIGEST_DISPLAY_LEN = 8
@@ -125,52 +121,19 @@ _DIGEST_DISPLAY_LEN = 8
 
 @st.cache_resource
 def _load_config(path_str: str) -> AppM4Config:
-    """Load and cache the M4 app YAML.
-
-    Parameters
-    ----------
-    path_str : str
-        Path to ``configs/app_m4.yaml``.
-
-    Returns
-    -------
-    AppM4Config
-        Validated product config.
-    """
+    """Load and cache the M4 app YAML."""
     return load_app_m4_config(path_str)
 
 
 @st.cache_resource
 def _load_imputer(path_str: str) -> SessionImputer:
-    """Load and cache the pretrained SessionImputer.
-
-    Parameters
-    ----------
-    path_str : str
-        Path to ``configs/app_m4.yaml``.
-
-    Returns
-    -------
-    SessionImputer
-        Ready for reverse-SDE impute.
-    """
+    """Load and cache the pretrained SessionImputer."""
     return SessionImputer.from_app_config(path_str)
 
 
 @st.cache_resource
 def _load_adapt_config(path_str: str) -> AdaptM7Config:
-    """Load and cache the M7 adapt YAML.
-
-    Parameters
-    ----------
-    path_str : str
-        Path to ``configs/adapt_m7.yaml``.
-
-    Returns
-    -------
-    AdaptM7Config
-        Validated smoke-cap config.
-    """
+    """Load and cache the M7 adapt YAML."""
     return load_adapt_m7_config(path_str)
 
 
@@ -179,6 +142,7 @@ def _clear_impute_session_keys() -> None:
     st.session_state.pop(_SESSION_RESULT_KEY, None)
     st.session_state.pop(_SESSION_FEATURES_KEY, None)
     st.session_state.pop(_SESSION_RESULT_DIGEST_KEY, None)
+    st.session_state.pop(_SESSION_RESULT_WINDOWS_KEY, None)
 
 
 def _resolve_bound_session(fingerprint: str) -> BoundAdaptSession | None:
@@ -542,7 +506,8 @@ def _render_charts(
 
 def _render_downloads(
         result: SessionImputeResult,
-        feature_names: tuple[str, ...],
+        windows: AdaptedWindows,
+        cap_knob: str,
 ) -> None:
     """Offer mean-fill and optional multi-sample CSV downloads.
 
@@ -550,35 +515,61 @@ def _render_downloads(
     ----------
     result : SessionImputeResult
         Impute outputs in original units.
-    feature_names : tuple of str
-        Feature axis labels.
+    windows : AdaptedWindows
+        Windows used for Fill (pad provenance for honest export).
+    cap_knob : str
+        Window-cap knob name for the truncation warning.
     """
     st.subheader("Downloads")
-    mean_frame = mean_fill_dataframe(
-        MeanFillExportRequest(
-            mean_fill=result.context.mean_fill,
-            feature_names=feature_names,
+    if windows.is_partial() and windows.valid_len is not None:
+        st.warning(
+            truncation_warning_message(
+                int(windows.valid_len.sum()),
+                int(windows.source_n_rows or 0),
+                cap_knob,
+            )
         )
+    mean_frame = mean_fill_dataframe(
+        mean_fill_request_from_windows(
+            result.context.mean_fill,
+            windows,
+        )
+    )
+    row_start, row_end = (0, 0)
+    if windows.is_partial() and windows.row_index is not None:
+        row_start, row_end = covered_row_range(windows)
+    mean_name = mean_fill_download_filename(
+        windows.is_partial(),
+        row_start,
+        row_end,
     )
     st.download_button(
         "Download completed CSV (best estimate)",
         data=dataframe_to_csv_bytes(mean_frame),
-        file_name="timefill_mean_fill.csv",
+        file_name=mean_name,
         mime="text/csv",
-        help="Observed values kept; gaps filled with the model mean.",
+        help=(
+            "Native observed values kept; only native gaps filled. "
+            "Simulate extra gaps affects charts/metrics only, not this file."
+        ),
     )
     long_frame = samples_long_dataframe(
-        SampleExportRequest(
-            samples=result.tensors.samples,
-            feature_names=feature_names,
+        sample_request_from_windows(
+            result.tensors.samples,
+            windows,
         )
+    )
+    long_name = samples_long_download_filename(
+        windows.is_partial(),
+        row_start,
+        row_end,
     )
     st.download_button(
         "Download all draws (long format, optional)",
         data=dataframe_to_csv_bytes(long_frame),
-        file_name="timefill_samples_long.csv",
+        file_name=long_name,
         mime="text/csv",
-        help="One row per draw × time × feature for uncertainty analysis.",
+        help="One row per draw × time × feature; pad rows omitted.",
     )
 
 
@@ -862,6 +853,19 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
     )
     short_digest = content_digest[:_DIGEST_DISPLAY_LEN]
     st.caption(f"Fill uses: {model_ref} · data {short_digest}")
+    cap_knob = (
+        _CAP_KNOB_ADAPT
+        if context.bound_session is not None
+        else _CAP_KNOB_SMOKE
+    )
+    if windows.is_partial() and windows.valid_len is not None:
+        st.warning(
+            truncation_warning_message(
+                int(windows.valid_len.sum()),
+                int(windows.source_n_rows or 0),
+                cap_knob,
+            )
+        )
     if st.button("Fill missing values", type="primary"):
         with st.spinner("Filling gaps… this can take a few minutes on CPU."):
             result = context.active_imputer().impute(
@@ -873,6 +877,7 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
         st.session_state[_SESSION_RESULT_KEY] = result
         st.session_state[_SESSION_FEATURES_KEY] = windows.feature_names
         st.session_state[_SESSION_RESULT_DIGEST_KEY] = content_digest
+        st.session_state[_SESSION_RESULT_WINDOWS_KEY] = windows
     if not impute_result_is_current(
             st.session_state.get(_SESSION_RESULT_DIGEST_KEY),
             content_digest,
@@ -881,7 +886,12 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
         return
     result = st.session_state.get(_SESSION_RESULT_KEY)
     feature_names = st.session_state.get(_SESSION_FEATURES_KEY)
-    if result is not None and feature_names is not None:
+    result_windows = st.session_state.get(_SESSION_RESULT_WINDOWS_KEY)
+    if (
+            result is not None
+            and feature_names is not None
+            and result_windows is not None
+    ):
         st.success(
             f"Filled {result.n_windows()} segment(s) "
             f"({result.meta.describe()}); "
@@ -892,7 +902,7 @@ def _render_impute_section(context: ImputeSectionContext) -> None:
             tuple(feature_names),
             context.overlay_enabled(),
         )
-        _render_downloads(result, tuple(feature_names))
+        _render_downloads(result, result_windows, cap_knob)
 
 
 def main() -> None:

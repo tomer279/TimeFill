@@ -450,7 +450,8 @@ def test_cli_pipeline_writes_mean_fill(tmp_path: Path) -> None:
     assert "artifacts/m2" not in str(result.run_dir()).replace("\\", "/")
     text = result.mean_fill_path().read_text(encoding="utf-8")
     assert "temp_c" in text
-    assert "window_id" in text
+    assert "row_index" in text
+    assert "window_id" not in text
 
 
 def test_cli_exit_too_few_windows(tmp_path: Path) -> None:

@@ -1,4 +1,19 @@
-"""WP2 tests: train-only FeatureScaler fit, round-trip, score-net smoke."""
+"""WP2/WP5 tests: train-only FeatureScaler fit, A8 leakage guards, smoke.
+
+Functions
+---------
+test_scaler_fit_ignores_perturbed_held_out
+    Train-slice stats unchanged after val/test are scaled by 1000.
+test_missing_cells_with_nan_and_huge_do_not_pollute_stats
+    Huge / NaN under ``m==0`` (no sentinel overwrite) match a fit that
+    drops those cells.
+test_inverse_transform_roundtrip_on_observed
+    Observed cells round-trip through transform → inverse.
+test_scaler_save_load_checkpoint_convention
+    Scaler NPZ lives under checkpoints/ with the locked filename.
+test_real_batch_normalize_score_net_smoke
+    Train/val real batches normalize then score-net forward stays finite.
+"""
 
 from __future__ import annotations
 
@@ -45,6 +60,12 @@ _ROUNDTRIP_ATOL = 1e-4
 _STATS_ATOL = 1e-5
 _DIFFUSION_TIME = 0.5
 _BATCH_TAKE = 2
+_N_TRAIN = 4
+_N_HELD_OUT = 4
+_TRAIN_VALUE = 2.0
+_HELD_OUT_VALUE = 5.0
+_PERTURB_SCALE = 1000.0
+_HUGE_MISSING = 1.0e6
 
 
 def _write_site_csv(
@@ -114,36 +135,75 @@ def window_dataset(tmp_path: Path):
     return builder.build(sites)
 
 
-def test_scaler_ignores_val_when_fitting() -> None:
-    """Fit stats match train observed cells and ignore a shifted val set."""
-    n_train, seq_len = 4, 8
-    train_x = np.full(
-        (n_train, seq_len, _N_FEATURES),
-        2.0,
-        dtype=np.float32,
+def test_scaler_fit_ignores_perturbed_held_out() -> None:
+    """``fit_scaler_on_train_split`` ignores ×1000 held-out windows (A8).
+
+    Notes
+    -----
+    Mutation check (walkthrough): temporarily change
+    ``fit_scaler_on_train_split`` to fit all windows and expect failure.
+    """
+    from src.data.real.windows import RealWindowDataset
+
+    rng = np.random.default_rng(_SEED)
+    train_x = rng.normal(
+        loc=_TRAIN_VALUE,
+        scale=1.0,
+        size=(_N_TRAIN, _SEQ_LEN, _N_FEATURES),
+    ).astype(np.float32)
+    held_x = rng.normal(
+        loc=_HELD_OUT_VALUE,
+        scale=1.0,
+        size=(_N_HELD_OUT, _SEQ_LEN, _N_FEATURES),
+    ).astype(np.float32)
+    values = np.concatenate([train_x, held_x], axis=0)
+    masks = np.ones_like(values, dtype=np.float32)
+    entity_ids = np.arange(values.shape[0], dtype=np.int64)
+    dataset = RealWindowDataset(
+        values=values,
+        native_masks=masks,
+        entity_ids=entity_ids,
     )
-    train_m = np.ones_like(train_x, dtype=np.float32)
-    # Val tensors intentionally unused: fit must not see them.
-    _val_x = np.full((4, seq_len, _N_FEATURES), 1000.0, dtype=np.float32)
-    _val_m = np.ones_like(_val_x, dtype=np.float32)
-    del _val_x, _val_m
+    train_idx = np.arange(_N_TRAIN, dtype=np.int64)
+    baseline = fit_scaler_on_train_split(dataset, train_idx)
 
-    scaler = FeatureScaler().fit(train_x, train_m)
-    assert bool(jnp.allclose(scaler.mean, 2.0, atol=_STATS_ATOL))
-    assert bool(jnp.allclose(scaler.std, 1.0, atol=_STATS_ATOL))
+    perturbed = np.array(values, copy=True)
+    perturbed[_N_TRAIN:] *= _PERTURB_SCALE
+    perturbed_dataset = RealWindowDataset(
+        values=perturbed,
+        native_masks=masks,
+        entity_ids=entity_ids,
+    )
+    refit = fit_scaler_on_train_split(perturbed_dataset, train_idx)
+    assert bool(jnp.allclose(refit.mean, baseline.mean, atol=_STATS_ATOL))
+    assert bool(jnp.allclose(refit.std, baseline.std, atol=_STATS_ATOL))
+    leaked = FeatureScaler().fit(
+        perturbed_dataset.values,
+        perturbed_dataset.native_masks,
+    )
+    assert float(jnp.max(jnp.abs(leaked.mean - baseline.mean))) > 1.0
 
 
-def test_missing_cells_do_not_pollute_stats() -> None:
-    """Huge values under m==0 must not affect mean/std."""
+def test_missing_cells_with_nan_and_huge_do_not_pollute_stats() -> None:
+    """Huge values and NaN under ``m==0`` must not enter moments (A8)."""
     values = np.ones((2, 4, _N_FEATURES), dtype=np.float32)
     mask = np.ones_like(values, dtype=np.float32)
-    values[:, 0, :] = 1.0e6
+    values[:, 0, :] = _HUGE_MISSING
+    values[:, 1, :] = np.nan
     mask[:, 0, :] = MASK_MISSING
-    values = np.where(mask == MASK_OBSERVED, values, MISSING_VALUE_SENTINEL)
+    mask[:, 1, :] = MASK_MISSING
+    # Intentionally leave NaN / huge under missing (no sentinel overwrite).
+
+    # Same moments as fitting only the observed time steps (all ones).
+    clean_values = np.ones((2, 2, _N_FEATURES), dtype=np.float32)
+    clean_mask = np.ones_like(clean_values, dtype=np.float32)
+    expected = FeatureScaler().fit(clean_values, clean_mask)
 
     scaler = FeatureScaler().fit(values, mask)
-    assert bool(jnp.allclose(scaler.mean, 1.0, atol=_STATS_ATOL))
-    assert bool(jnp.all(scaler.std >= 1.0 - _STATS_ATOL))
+    assert bool(jnp.allclose(scaler.mean, expected.mean, atol=_STATS_ATOL))
+    assert bool(jnp.allclose(scaler.std, expected.std, atol=_STATS_ATOL))
+    assert bool(jnp.all(jnp.isfinite(scaler.mean)))
+    assert bool(jnp.all(jnp.isfinite(scaler.std)))
 
 
 def test_inverse_transform_roundtrip_on_observed() -> None:

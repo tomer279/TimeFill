@@ -203,12 +203,15 @@ class BenchSelection:
         Expected feature count ``F``.
     methods : tuple of str
         Enabled method names in report order.
+    feature_names : tuple of str
+        Feature names from the bench YAML (fallback for legacy scalers).
     """
 
     split_name: str
     max_windows: int | None
     n_features: int
     methods: tuple[str, ...]
+    feature_names: tuple[str, ...] = ()
 
     def describe(self) -> str:
         """Return a short selection summary."""
@@ -430,6 +433,9 @@ class BenchM3ConfigLoader:
             ),
             n_features=int(data["n_features"]),
             methods=tuple(str(name) for name in raw["methods"]),
+            feature_names=tuple(
+                str(name) for name in (data.get("feature_names") or ())
+            ),
         )
         knobs = BenchRunKnobs(
             sample=SampleKnobs(
@@ -481,7 +487,11 @@ def load_data_bundle(plan: BenchM3Plan) -> DataBundle:
             checkpoint_dir=plan.paths.checkpoint.parent,
         )
     )
-    bundle = DataBundle(windows=windows, scaler=scaler)
+    bundle = DataBundle(
+        windows=windows,
+        scaler=scaler,
+        config_feature_names=plan.selection.feature_names,
+    )
     bundle.require_feature_count(plan.selection.n_features)
     return bundle
 

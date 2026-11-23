@@ -20,7 +20,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from src.data.normalize import FeatureScaler, fit_scaler_on_train_split
+from src.data.normalize import (
+    FeatureScaler,
+    FeatureScalerOptions,
+    fit_scaler_on_train_split,
+)
 from src.data.real import load_processed_dataset
 from src.data.real_config import RealM2Config
 from src.data.schema import MASK_OBSERVED
@@ -122,7 +126,22 @@ def load_normalized_pool(
     """
     processed = config.data.resolve_processed_dir(_REPO_ROOT)
     dataset, split = load_processed_dataset(processed)
-    scaler = fit_scaler_on_train_split(dataset, split.train_idx)
+    transform = config.data.transform
+    scaler = fit_scaler_on_train_split(
+        dataset,
+        split.train_idx,
+        FeatureScaler(
+            options=FeatureScalerOptions(
+                log1p_features=transform.log1p_features,
+                clip_nonnegative=transform.clip_nonnegative,
+                allow_empty_feature_fallback=(
+                    config.data.allow_empty_feature_fallback
+                ),
+                feature_names=tuple(config.data.feature_names),
+                fit_slice_label="train split",
+            ),
+        ),
+    )
     values_n = np.asarray(
         scaler.transform(dataset.values, dataset.native_masks),
         dtype=np.float32,

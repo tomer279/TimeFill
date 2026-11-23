@@ -1,4 +1,6 @@
-"""WP6 tests: masked MAE/RMSE/CRPS and interval coverage."""
+"""WP6/WP5 tests: masked MAE/RMSE/CRPS, coverage, empty-target NaN (A9)."""
+
+import math
 
 import jax.numpy as jnp
 
@@ -62,3 +64,27 @@ def test_interval_coverage_and_table() -> None:
     }
     assert mapping["coverage_50"] == 1.0
     assert mapping["coverage_90"] == 1.0
+
+
+def _all_observed_tensors() -> EvalTensors:
+    """Build tensors with no missing (target) cells."""
+    truth = jnp.array([[[1.0], [2.0], [3.0]]], dtype=jnp.float32)
+    mask = jnp.ones_like(truth, dtype=jnp.float32) * MASK_OBSERVED
+    mean = truth
+    samples = jnp.broadcast_to(
+        truth[:, None, :, :],
+        (_BATCH, _K, _SEQ, _FEAT),
+    )
+    return EvalTensors(truth=truth, mean=mean, samples=samples, mask=mask)
+
+
+def test_all_observed_mask_metrics_are_nan() -> None:
+    """No target cells → MAE/RMSE/CRPS/coverage are NaN, not 0.0 (A9)."""
+    tensors = _all_observed_tensors()
+    assert math.isnan(float(masked_mae(tensors)))
+    assert math.isnan(float(masked_rmse(tensors)))
+    assert math.isnan(float(empirical_crps(tensors)))
+    assert math.isnan(float(interval_coverage(tensors, _LEVEL_90)))
+    table = ImputationEvaluator().compute(tensors)
+    for name, value in table.as_dict().items():
+        assert math.isnan(value), f"{name} should be NaN, got {value}"

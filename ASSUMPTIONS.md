@@ -934,7 +934,27 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 | `sample.point_estimate` | `mean` | `median` | MAE-aligned (WP6) |
 | `model.arch` | `tcn_v1` | `tcn_v2` | Capacity (WP3) |
 | `data.transform.log1p_features` | `[]` | pollutants except O3 | Skew (WP5) |
+| `data.transform.clip_nonnegative` | `false` | `true` | Clip restored originals at 0 (WP5) |
 | `data.allow_empty_feature_fallback` | `true` | `false` | No silent identity scaler |
+| `adapt.allow_empty_feature_fallback` | `true` | opt-in `false` | Same empty-feature policy on adapt train slice |
+
+### WP5 feature transform and metrics
+
+- Status: **Done** (2026-11-23). `FeatureScaler` optional per-feature `log1p` before
+  z-score; inverse = z-inverse → `expm1`; `clip_nonnegative` clips **all** features
+  on restore. NPZ persists `log1p_mask` / `clip_nonnegative`; legacy files load as
+  no transform.
+- Observed cells under `m==0` are zeroed before moment sums so NaNs there cannot
+  pollute fit (A8).
+- Empty train feature: raise naming features + fit slice unless
+  `allow_empty_feature_fallback=true` (identity mean 0 / std 1).
+- Adapt: when fallback is `false`, also enforce
+  `min_observed_rate_per_feature=0.05` on the **train** slice.
+- `_weighted_mean` returns NaN when weight sum is 0 (A9); Streamlit quick-check
+  shows ``no target cells``. `metrics_by_rate.*` keeps `n_target_cells` and adds
+  `*_norm` columns; `per_feature.csv` is written beside them.
+- `real_setup` still refuses non-legacy `model.*` / `sample.observed_mode` until
+  pre-WP7 wiring; WP5 transform refuses are removed.
 
 ### WP1 observed pairing
 
@@ -963,9 +983,8 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
   Constraint: `max_blocks * lo <= T`.
 - `warmup_cosine` ends at `0.1 * peak_lr` (not zero); `warmup_steps` must be
   `< epochs * steps_per_epoch`.
-- Full `real_m7_5.yaml` still refuses WP3 `model.*` / WP5 transform;
-  hygiene config omits those sections (legacy model, empty transform).
-- `train_meta.receptive_field` is `null` until WP3.
+- Hygiene config omits non-legacy `model.*` (legacy model). WP5 transform is
+  wired; full `real_m7_5.yaml` still refuses non-legacy `model.*` until pre-WP7.
 
 ### WP6 sampler
 

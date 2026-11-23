@@ -1,5 +1,25 @@
 # Milestone 7.5 walkthrough
 
+## WP5 — Feature transform and per-feature evaluation
+
+- `FeatureScaler`: optional `log1p_features`, `clip_nonnegative`, empty-feature
+  raise vs `allow_empty_feature_fallback`, NPZ transform keys.
+- A9: empty-target metrics are NaN; quick-check shows `no target cells`.
+- Bench writes `per_feature.csv` and `*_norm` columns on `metrics_by_rate.*`.
+- Adapt caps gain `allow_empty_feature_fallback` (legacy `true`); strict mode
+  also enforces train-slice `min_observed_rate_per_feature=0.05`.
+
+### A8 mutation check (manual)
+
+`test_scaler_fit_ignores_perturbed_held_out` goes through
+`fit_scaler_on_train_split`. To confirm it can fail: temporarily change that
+helper to `FeatureScaler().fit(dataset.values, dataset.native_masks)`, re-run
+the test, and expect a failure; then revert.
+
+```text
+pytest tests/test_normalize_fit_train_only.py tests/test_wp5_feature_transform.py tests/test_metrics.py tests/test_adapt_m7.py -q
+```
+
 ## WP3 — Score network v2
 
 - `tcn_v2` lives beside unchanged `tcn_v1` (`build_score_net`, FiLM `(1+γ)`, stem-included RF).

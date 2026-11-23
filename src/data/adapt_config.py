@@ -100,6 +100,8 @@ class AdaptCaps:
         Train share of windows (smoke = remainder).
     smoke_mcar_rate : float
         Artificial MCAR rate for DSM during adapt.
+    allow_empty_feature_fallback : bool
+        Legacy silent identity scaler when a train feature has no obs.
     """
 
     artifact_dir: str
@@ -107,6 +109,7 @@ class AdaptCaps:
     min_windows: int
     train_fraction: float
     smoke_mcar_rate: float
+    allow_empty_feature_fallback: bool = True
 
     def validate(self) -> None:
         """Raise ``ValueError`` if runtime caps are invalid."""
@@ -130,12 +133,12 @@ class AdaptCaps:
         if not self.artifact_dir:
             raise ValueError("artifact_dir must be a non-empty path string")
 
-    def to_dict(self) -> dict[str, float | int | str]:
+    def to_dict(self) -> dict[str, float | int | str | bool]:
         """Return a JSON-serializable dict of cap fields.
 
         Returns
         -------
-        dict of str to float or int or str
+        dict of str to float or int or str or bool
             Cap field name to value.
         """
         return {
@@ -144,6 +147,9 @@ class AdaptCaps:
             "min_windows": self.min_windows,
             "train_fraction": self.train_fraction,
             "smoke_mcar_rate": self.smoke_mcar_rate,
+            "allow_empty_feature_fallback": (
+                self.allow_empty_feature_fallback
+            ),
         }
 
 
@@ -622,6 +628,9 @@ def apply_adapt_cli_overrides(
             min_windows=config.caps.min_windows,
             train_fraction=config.caps.train_fraction,
             smoke_mcar_rate=config.caps.smoke_mcar_rate,
+            allow_empty_feature_fallback=(
+                config.caps.allow_empty_feature_fallback
+            ),
         ),
         mode=config.mode,
         geometry=AdaptGeometry(
@@ -681,6 +690,9 @@ def _parse_adapt_m7_mapping(raw: Mapping[str, Any]) -> AdaptM7Config:
             min_windows=int(adapt.get("min_windows", 2)),
             train_fraction=float(adapt.get("train_fraction", 0.80)),
             smoke_mcar_rate=float(adapt.get("smoke_mcar_rate", 0.30)),
+            allow_empty_feature_fallback=bool(
+                adapt.get("allow_empty_feature_fallback", True)
+            ),
         ),
         mode=AdaptModeSection(
             default_mode=str(adapt.get("default_mode", _MODE_SCRATCH)),

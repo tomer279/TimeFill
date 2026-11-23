@@ -218,7 +218,7 @@ class RealDataWindow:
 
 
 class RealDataTransform:
-    """Optional per-feature transform knobs (parse-only until WP5).
+    """Optional per-feature log1p / clip knobs for ``FeatureScaler``.
 
     Public methods
     --------------
@@ -563,6 +563,12 @@ class RealDataConfig:
         self.window.validate()
         self.batch.validate(self.window.seq_len)
         self.transform.validate()
+        unknown = set(self.transform.log1p_features) - set(self.feature_names)
+        if unknown:
+            raise ValueError(
+                "data.transform.log1p_features not in feature_names: "
+                f"{sorted(unknown)}"
+            )
         self.split.validate()
 
     def resolve_processed_dir(self, repo_root: Path) -> Path:

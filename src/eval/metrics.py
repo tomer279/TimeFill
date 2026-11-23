@@ -13,12 +13,20 @@ Functions
 ---------
 masked_mae
     Mean absolute error on cells where ``m == 0``.
+masked_mae_per_feature
+    Per-feature masked MAE shaped ``(F,)``.
 masked_rmse
     Root mean squared error on masked cells.
+masked_rmse_per_feature
+    Per-feature masked RMSE shaped ``(F,)``.
 empirical_crps
     Ensemble CRPS averaged over masked cells.
+empirical_crps_per_feature
+    Per-feature empirical CRPS shaped ``(F,)``.
 interval_coverage
     Fraction of truth inside a central predictive interval.
+interval_coverage_per_feature
+    Per-feature interval coverage shaped ``(F,)``.
 write_mean_median_csvs
     Write raw ``mean.csv`` / ``median.csv`` array dumps (not app export).
 """
@@ -42,7 +50,6 @@ from src.data.schema import (
 _SAMPLE_AXIS = 1
 _PAIR_AXIS_A = 1
 _PAIR_AXIS_B = 2
-_WEIGHT_FLOOR = 1.0
 _MASK_COMPARE_TOL = 0.5
 _HALF = 2.0
 _LEVEL_50 = 0.5
@@ -303,6 +310,37 @@ def masked_mae(
     return _weighted_mean(abs_err, weights)
 
 
+def masked_mae_per_feature(
+        tensors: EvalTensors,
+        point_estimate: str = _POINT_ESTIMATE_MEAN,
+) -> jnp.ndarray:
+    """Per-feature mean absolute error on missing cells.
+
+    Parameters
+    ----------
+    tensors : EvalTensors
+        Must include ``truth``, ``mean``, ``samples``, and ``mask``.
+    point_estimate : str, optional
+        ``mean`` (legacy) or ``median`` over the sample axis ``K``.
+
+    Returns
+    -------
+    jax.Array
+        MAE per feature shaped ``(F,)``; ``NaN`` when a feature has no
+        target cells.
+    """
+    if point_estimate not in _ALLOWED_POINT_ESTIMATE:
+        raise ValueError(
+            "point_estimate must be one of "
+            f"{sorted(_ALLOWED_POINT_ESTIMATE)}, "
+            f"got {point_estimate!r}"
+        )
+    weights = tensors.missing_weights()
+    fill = _point_fill(tensors, point_estimate)
+    abs_err = jnp.abs(fill - tensors.truth)
+    return _weighted_mean_per_feature(abs_err, weights)
+
+
 def masked_rmse(tensors: EvalTensors) -> jnp.ndarray:
     """Root mean squared error on missing cells using the posterior mean.
 
@@ -321,6 +359,24 @@ def masked_rmse(tensors: EvalTensors) -> jnp.ndarray:
     return jnp.sqrt(_weighted_mean(sq_err, weights))
 
 
+def masked_rmse_per_feature(tensors: EvalTensors) -> jnp.ndarray:
+    """Per-feature RMSE on missing cells using the posterior mean.
+
+    Parameters
+    ----------
+    tensors : EvalTensors
+        Must include ``truth``, ``mean``, and ``mask``.
+
+    Returns
+    -------
+    jax.Array
+        RMSE per feature shaped ``(F,)``.
+    """
+    weights = tensors.missing_weights()
+    sq_err = (tensors.mean - tensors.truth) ** 2
+    return jnp.sqrt(_weighted_mean_per_feature(sq_err, weights))
+
+
 def empirical_crps(tensors: EvalTensors) -> jnp.ndarray:
     """Empirical ensemble CRPS averaged over missing cells.
 
@@ -337,22 +393,29 @@ def empirical_crps(tensors: EvalTensors) -> jnp.ndarray:
     jax.Array
         Scalar CRPS over masked entries.
     """
-    tensors.validate_shapes()
-    truth_exp = jnp.expand_dims(tensors.truth, axis=_SAMPLE_AXIS)
-    abs_err = jnp.mean(
-        jnp.abs(tensors.samples - truth_exp),
-        axis=_SAMPLE_AXIS,
+    return _weighted_mean(
+        _cell_crps(tensors),
+        tensors.missing_weights(),
     )
-    delta = (
-        jnp.expand_dims(tensors.samples, axis=_PAIR_AXIS_B)
-        - jnp.expand_dims(tensors.samples, axis=_PAIR_AXIS_A)
+
+
+def empirical_crps_per_feature(tensors: EvalTensors) -> jnp.ndarray:
+    """Per-feature empirical ensemble CRPS on missing cells.
+
+    Parameters
+    ----------
+    tensors : EvalTensors
+        Must include ``truth``, ``samples``, and ``mask``.
+
+    Returns
+    -------
+    jax.Array
+        CRPS per feature shaped ``(F,)``.
+    """
+    return _weighted_mean_per_feature(
+        _cell_crps(tensors),
+        tensors.missing_weights(),
     )
-    spread = (_HALF ** -1) * jnp.mean(
-        jnp.abs(delta),
-        axis=(_PAIR_AXIS_A, _PAIR_AXIS_B),
-    )
-    cell_crps = abs_err - spread
-    return _weighted_mean(cell_crps, tensors.missing_weights())
 
 
 def interval_coverage(
@@ -373,14 +436,34 @@ def interval_coverage(
     jax.Array
         Fraction of masked truth cells inside the interval.
     """
-    if not 0.0 < level <= 1.0:
-        raise ValueError(f"level must be in (0, 1], got {level}")
-    tensors.validate_shapes()
-    tail = (1.0 - level) / _HALF
-    low = jnp.quantile(tensors.samples, tail, axis=_SAMPLE_AXIS)
-    high = jnp.quantile(tensors.samples, 1.0 - tail, axis=_SAMPLE_AXIS)
-    inside = (tensors.truth >= low) & (tensors.truth <= high)
-    return _weighted_mean(inside.astype(jnp.float32), tensors.missing_weights())
+    return _weighted_mean(
+        _interval_inside(tensors, level).astype(jnp.float32),
+        tensors.missing_weights(),
+    )
+
+
+def interval_coverage_per_feature(
+        tensors: EvalTensors,
+        level: float,
+) -> jnp.ndarray:
+    """Per-feature empirical coverage of a central predictive interval.
+
+    Parameters
+    ----------
+    tensors : EvalTensors
+        Must include ``truth``, ``samples``, and ``mask``.
+    level : float
+        Central interval level in ``(0, 1]``.
+
+    Returns
+    -------
+    jax.Array
+        Coverage per feature shaped ``(F,)``.
+    """
+    return _weighted_mean_per_feature(
+        _interval_inside(tensors, level).astype(jnp.float32),
+        tensors.missing_weights(),
+    )
 
 
 def write_mean_median_csvs(
@@ -435,11 +518,44 @@ def _write_array_csv(path: Path, array: jnp.ndarray) -> None:
     np.savetxt(path, rows, delimiter=",")
 
 
+def _cell_crps(tensors: EvalTensors) -> jnp.ndarray:
+    """Return per-cell empirical CRPS ``(B, T, F)``."""
+    tensors.validate_shapes()
+    truth_exp = jnp.expand_dims(tensors.truth, axis=_SAMPLE_AXIS)
+    abs_err = jnp.mean(
+        jnp.abs(tensors.samples - truth_exp),
+        axis=_SAMPLE_AXIS,
+    )
+    delta = (
+        jnp.expand_dims(tensors.samples, axis=_PAIR_AXIS_B)
+        - jnp.expand_dims(tensors.samples, axis=_PAIR_AXIS_A)
+    )
+    spread = (_HALF ** -1) * jnp.mean(
+        jnp.abs(delta),
+        axis=(_PAIR_AXIS_A, _PAIR_AXIS_B),
+    )
+    return abs_err - spread
+
+
+def _interval_inside(
+        tensors: EvalTensors,
+        level: float,
+) -> jnp.ndarray:
+    """Return a boolean mask of truth inside the central interval."""
+    if not 0.0 < level <= 1.0:
+        raise ValueError(f"level must be in (0, 1], got {level}")
+    tensors.validate_shapes()
+    tail = (1.0 - level) / _HALF
+    low = jnp.quantile(tensors.samples, tail, axis=_SAMPLE_AXIS)
+    high = jnp.quantile(tensors.samples, 1.0 - tail, axis=_SAMPLE_AXIS)
+    return (tensors.truth >= low) & (tensors.truth <= high)
+
+
 def _weighted_mean(
         values: jnp.ndarray,
         weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Weighted mean with a floor on the weight sum.
+    """Weighted mean; ``NaN`` when the weight sum is zero.
 
     Parameters
     ----------
@@ -451,7 +567,21 @@ def _weighted_mean(
     Returns
     -------
     jax.Array
-        Scalar weighted mean.
+        Scalar weighted mean, or ``NaN`` if there are no weights.
     """
-    denom = jnp.maximum(jnp.sum(weights), _WEIGHT_FLOOR)
-    return jnp.sum(values * weights) / denom
+    total = jnp.sum(weights)
+    return jnp.where(
+        total > 0.0,
+        jnp.sum(values * weights) / total,
+        jnp.nan,
+    )
+
+
+def _weighted_mean_per_feature(
+        values: jnp.ndarray,
+        weights: jnp.ndarray,
+) -> jnp.ndarray:
+    """Per-feature weighted mean; ``NaN`` where a feature has no weight."""
+    counts = jnp.sum(weights, axis=(BATCH_AXIS, TIME_AXIS))
+    sums = jnp.sum(values * weights, axis=(BATCH_AXIS, TIME_AXIS))
+    return jnp.where(counts > 0.0, sums / counts, jnp.nan)

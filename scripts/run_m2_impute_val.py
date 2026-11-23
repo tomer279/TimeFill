@@ -409,8 +409,9 @@ class M2ValImputeRunner:
         m_native = pack.batch.m_native
         truth = restorer.restore_windows(pack.batch.x0, m_native)
         obs = restorer.restore_windows(pack.x_obs, pack.m_train)
-        mean = restorer.restore_windows(pack.mean, m_native)
-        samples = restorer.restore_samples(pack.samples, m_native)
+        mean, samples = restorer.restore_mean_from_samples(
+            pack.samples, m_native
+        )
         quantiles = restorer.restore_quantiles(pack.quantiles, m_native)
         metric_mask = pack.metric_mask()
         save_imputation_bands(

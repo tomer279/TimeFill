@@ -48,6 +48,7 @@ from src.data.schema import TIME_AXIS
 from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
+    receptive_field,
 )
 from src.sample.reverse_sde import ImputeSolverSettings, resolve_sample_t_eps
 from src.sde.vp_sde import VPSDE
@@ -982,8 +983,7 @@ def _train_meta_payload(
         "median_grad_norm": median_grad,
         "ema_decay": protocol.ema_decay,
         "parameter_count": _parameter_count(best_model),
-        # shortcut: null until WP3 exposes receptive_field(config)
-        "receptive_field": None,
+        "receptive_field": receptive_field(config.model),
         # null when no selection epoch improved (fallback ckpt only)
         "selected_epoch": selected_epoch,
         "selection_fallback": selected_epoch is None,

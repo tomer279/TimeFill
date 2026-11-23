@@ -148,7 +148,8 @@ def assert_wp0_consumable(config: RealM2Config) -> None:
     transform = config.data.transform
     legacy_model = default_score_net_config(config.data.n_features)
     # WP4 consumes EMA / schedule / select / masks / eps + sample.t_eps.
-    # shortcut: still refuse WP3 model.* and WP5 transform until those WPs.
+    # shortcut: refuse model.* until pre-WP7 wires build_score_net(config.model)
+    # + sidecar write; refuse WP5 transform until WP5.
     checks: tuple[tuple[bool, str], ...] = (
         (config.model != legacy_model, "model.*"),
         (sample.observed_mode != "frozen_clean", "sample.observed_mode"),

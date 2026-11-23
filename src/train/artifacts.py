@@ -46,9 +46,13 @@ import matplotlib.pyplot as plt
 
 from src.models.score_net import (
     ConditionalScoreNet,
+    ConditionalScoreNetV2,
     ScoreNetConfig,
+    build_score_net,
     default_score_net_config,
 )
+
+ScoreNetModule = ConditionalScoreNet | ConditionalScoreNetV2
 from src.plot_io import save_figure
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -319,14 +323,14 @@ def stub_val_imputation_hook(payload: ValSnapshotPayload) -> Path:
     return path
 
 
-def save_checkpoint(path: Path, model: ConditionalScoreNet) -> None:
+def save_checkpoint(path: Path, model: ScoreNetModule) -> None:
     """Serialize an Equinox score network to ``path``.
 
     Parameters
     ----------
     path : pathlib.Path
         Destination file (``.eqx``).
-    model : ConditionalScoreNet
+    model : ConditionalScoreNet or ConditionalScoreNetV2
         Model to serialize.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -335,20 +339,20 @@ def save_checkpoint(path: Path, model: ConditionalScoreNet) -> None:
 
 def load_checkpoint(
         path: Path,
-        like: ConditionalScoreNet,
-) -> ConditionalScoreNet:
+        like: ScoreNetModule,
+) -> ScoreNetModule:
     """Load a score network checkpoint into a template module.
 
     Parameters
     ----------
     path : pathlib.Path
         Checkpoint file written by ``save_checkpoint``.
-    like : ConditionalScoreNet
+    like : ConditionalScoreNet or ConditionalScoreNetV2
         Template with the same architecture / static fields.
 
     Returns
     -------
-    ConditionalScoreNet
+    ConditionalScoreNet or ConditionalScoreNetV2
         Restored module.
     """
     return eqx.tree_deserialise_leaves(path, like)
@@ -417,7 +421,7 @@ def load_model_config(path: Path) -> dict[str, Any]:
 
 def save_checkpoint_with_sidecar(
         path: Path,
-        model: ConditionalScoreNet,
+        model: ScoreNetModule,
         model_config: Mapping[str, Any],
 ) -> None:
     """Serialize a score net and write ``model_config.json`` beside it.
@@ -426,7 +430,7 @@ def save_checkpoint_with_sidecar(
     ----------
     path : pathlib.Path
         Destination ``.eqx`` path.
-    model : ConditionalScoreNet
+    model : ConditionalScoreNet or ConditionalScoreNetV2
         Model to serialize.
     model_config : Mapping of str to Any
         Sidecar payload written next to ``path``.
@@ -439,7 +443,7 @@ def load_checkpoint_with_config(
         path: Path,
         n_features: int,
         key: jax.Array,
-) -> ConditionalScoreNet:
+) -> ScoreNetModule:
     """Load a checkpoint using a sidecar template when present.
 
     Missing sidecar falls back to ``default_score_net_config(n_features)``.
@@ -455,7 +459,7 @@ def load_checkpoint_with_config(
 
     Returns
     -------
-    ConditionalScoreNet
+    ConditionalScoreNet or ConditionalScoreNetV2
         Restored module.
     """
     sidecar = Path(path).parent / _MODEL_CONFIG_NAME
@@ -465,7 +469,7 @@ def load_checkpoint_with_config(
         config = ScoreNetConfig.from_dict(score_raw)
     else:
         config = default_score_net_config(n_features)
-    template = ConditionalScoreNet(key, config)
+    template = build_score_net(key, config)
     return load_checkpoint(path, template)
 
 

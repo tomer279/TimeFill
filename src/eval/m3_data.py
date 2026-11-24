@@ -331,13 +331,18 @@ def build_protocol_grid(protocols_cfg: dict) -> tuple[ProtocolKey, ...]:
     ]
     block_cfg = protocols_cfg.get("block") or {}
     if bool(block_cfg.get("enabled", False)):
-        items.append(
-            ProtocolKey(
-                name="block",
-                mask_rate=None,
-                block_len=int(block_cfg["block_len"]),
+        block_lens = [int(block_cfg["block_len"])]
+        # shortcut: extra_lens = extension rows only; promote if M8 needs more.
+        extra = block_cfg.get("extra_lens") or []
+        block_lens.extend(int(length) for length in extra)
+        for length in block_lens:
+            items.append(
+                ProtocolKey(
+                    name="block",
+                    mask_rate=None,
+                    block_len=length,
+                )
             )
-        )
     return tuple(items)
 
 

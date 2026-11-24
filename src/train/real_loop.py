@@ -45,18 +45,15 @@ import optax
 
 from src.data.real_config import RealM2Config, load_real_m2_config
 from src.data.schema import TIME_AXIS
-from src.models.score_net import (
-    ConditionalScoreNet,
-    default_score_net_config,
-    receptive_field,
-)
+from src.models.score_net import build_score_net, receptive_field
 from src.sample.reverse_sde import ImputeSolverSettings, resolve_sample_t_eps
 from src.sde.vp_sde import VPSDE
 from src.train.artifacts import (
     ArtifactPaths,
+    ScoreNetModule,
     TrainHistory,
     ValSnapshotPayload,
-    save_checkpoint,
+    save_checkpoint_with_sidecar,
     write_train_meta,
 )
 from src.train.loop import build_optimizer
@@ -130,7 +127,7 @@ class M2TrainerBundle:
     ------------------
     config : RealM2Config
         Full real-m2 config.
-    model : ConditionalScoreNet
+    model : ScoreNetModule
         Initial score network.
     loss_fn : RealConditionalDSMLoss
         Real DSM loss.
@@ -145,7 +142,7 @@ class M2TrainerBundle:
     """
 
     config: RealM2Config
-    model: ConditionalScoreNet
+    model: ScoreNetModule
     loss_fn: RealConditionalDSMLoss
     optimizer: optax.GradientTransformation
     paths: ArtifactPaths
@@ -257,13 +254,13 @@ class _M2BestTracker:
         Epoch metric log.
     best_val : float
         Best validation loss so far.
-    best_model : ConditionalScoreNet
+    best_model : ScoreNetModule
         Model weights at ``best_val``.
     """
 
     history: TrainHistory
     best_val: float
-    best_model: ConditionalScoreNet
+    best_model: ScoreNetModule
 
     def append_row(self, row: Mapping[str, Any]) -> None:
         """Append one epoch metrics row.
@@ -275,12 +272,12 @@ class _M2BestTracker:
         """
         self.history.append_row(row)
 
-    def consider(self, model: ConditionalScoreNet, val_loss: float) -> bool:
+    def consider(self, model: ScoreNetModule, val_loss: float) -> bool:
         """Keep ``model`` if ``val_loss`` improves on ``best_val``.
 
         Parameters
         ----------
-        model : ConditionalScoreNet
+        model : ScoreNetModule
             Candidate score network.
         val_loss : float
             Validation DSM loss for this epoch.
@@ -369,7 +366,7 @@ class _M2LoopState:
 
     Instance variables
     ------------------
-    model : ConditionalScoreNet
+    model : ScoreNetModule
         Current score network.
     opt_state : optax.OptState
         Current Optax state.
@@ -381,17 +378,17 @@ class _M2LoopState:
         History and best-val bookkeeping.
     step_fn : callable
         Jitted train step.
-    ema_model : ConditionalScoreNet or None
+    ema_model : ScoreNetModule or None
         EMA weights when ``ema_decay`` is set.
     """
 
-    model: ConditionalScoreNet
+    model: ScoreNetModule
     opt_state: optax.OptState
     key_loop: jax.Array
     val_batch: RealDSMBatch
     tracker: _M2BestTracker
     step_fn: Callable
-    ema_model: ConditionalScoreNet | None = None
+    ema_model: ScoreNetModule | None = None
 
     def take_epoch_key(self) -> jax.Array:
         """Split ``key_loop`` and return the next epoch key.
@@ -406,22 +403,22 @@ class _M2LoopState:
 
     def store_epoch(
             self,
-            model: ConditionalScoreNet,
+            model: ScoreNetModule,
             opt_state: optax.OptState,
             row: Mapping[str, Any],
-            ema_model: ConditionalScoreNet | None,
+            ema_model: ScoreNetModule | None,
     ) -> None:
         """Store updated weights and append the epoch metrics row.
 
         Parameters
         ----------
-        model : ConditionalScoreNet
+        model : ScoreNetModule
             Updated score network.
         opt_state : optax.OptState
             Updated optimizer state.
         row : mapping of str to Any
             Epoch metrics including ``val_loss``.
-        ema_model : ConditionalScoreNet or None
+        ema_model : ScoreNetModule or None
             Updated EMA weights (or ``None``).
         """
         self.model = model
@@ -429,7 +426,7 @@ class _M2LoopState:
         self.ema_model = ema_model
         self.tracker.append_row(row)
 
-    def eval_model(self) -> ConditionalScoreNet:
+    def eval_model(self) -> ScoreNetModule:
         """Return EMA weights when present, else the raw model."""
         if self.ema_model is None:
             return self.model
@@ -450,7 +447,7 @@ class M2Trainer:
     ------------------
     config : RealM2Config
         Full M2 config.
-    model : ConditionalScoreNet
+    model : ScoreNetModule
         Score network being optimized.
     loss_fn : RealConditionalDSMLoss
         Real DSM loss module.
@@ -480,7 +477,7 @@ class M2Trainer:
         self.pool = bundle.pool
         self.val_hook = bundle.val_hook
 
-    def run(self, key: jax.Array) -> tuple[ConditionalScoreNet, TrainHistory]:
+    def run(self, key: jax.Array) -> tuple[ScoreNetModule, TrainHistory]:
         """Run the M2 training loop on real windows.
 
         Parameters
@@ -490,7 +487,7 @@ class M2Trainer:
 
         Returns
         -------
-        model : ConditionalScoreNet
+        model : ScoreNetModule
             Best-val score network.
         history : TrainHistory
             Logged train/val metrics.
@@ -516,10 +513,7 @@ class M2Trainer:
                     impute_bundle,
             ):
                 selected_epoch = epoch
-                save_checkpoint(
-                    self.paths.best_checkpoint(),
-                    state.tracker.best_model,
-                )
+                self._save_best_checkpoint(state.tracker.best_model)
             # shortcut: skip PNG when impute select already reverse-SDEs;
             # upgrade: cheap PNG path or ASSUMPTIONS note (see WP4 hygiene).
             if (
@@ -531,10 +525,7 @@ class M2Trainer:
         if selected_epoch is None:
             # No consider() ran: overwrite any stale ckpt with final eval weights.
             state.tracker.best_model = state.eval_model()
-            save_checkpoint(
-                self.paths.best_checkpoint(),
-                state.tracker.best_model,
-            )
+            self._save_best_checkpoint(state.tracker.best_model)
         state.tracker.history.save_csv(self.paths.loss_csv())
         state.tracker.history.save_plot(
             self.paths.loss_png(),
@@ -554,7 +545,7 @@ class M2Trainer:
 
     def evaluate(
             self,
-            model: ConditionalScoreNet,
+            model: ScoreNetModule,
             batch: RealDSMBatch,
             key: jax.Array,
     ) -> jnp.ndarray:
@@ -562,7 +553,7 @@ class M2Trainer:
 
         Parameters
         ----------
-        model : ConditionalScoreNet
+        model : ScoreNetModule
             Score network to evaluate.
         batch : RealDSMBatch
             Evaluation batch.
@@ -618,9 +609,9 @@ class M2Trainer:
             key_epoch: jax.Array,
             epoch: int,
     ) -> tuple[
-        ConditionalScoreNet,
+        ScoreNetModule,
         optax.OptState,
-        ConditionalScoreNet | None,
+        ScoreNetModule | None,
         dict[str, Any],
         _StepTotals,
     ]:
@@ -654,9 +645,9 @@ class M2Trainer:
             state: _M2LoopState,
             key_pack: _M2EpochKeyPack,
     ) -> tuple[
-        ConditionalScoreNet,
+        ScoreNetModule,
         optax.OptState,
-        ConditionalScoreNet | None,
+        ScoreNetModule | None,
         _StepTotals,
     ]:
         """Run all mini-batch updates for one epoch."""
@@ -752,9 +743,24 @@ class M2Trainer:
             )
         return state.tracker.consider(eval_model, score)
 
+    def _save_best_checkpoint(self, model: ScoreNetModule) -> None:
+        """Write best ``.eqx`` plus ``model_config.json`` sidecar."""
+        arch = str(self.config.model.arch)
+        save_checkpoint_with_sidecar(
+            self.paths.best_checkpoint(),
+            model,
+            {
+                "score_net": self.config.model.to_dict(),
+                "parameterization": (
+                    self.config.train.protocol.parameterization
+                ),
+                "arch_version": 2 if arch == "tcn_v2" else 1,
+            },
+        )
+
     def _fire_val_hook(
             self,
-            model: ConditionalScoreNet,
+            model: ScoreNetModule,
             val_batch: RealDSMBatch,
             epoch: int,
     ) -> None:
@@ -762,7 +768,7 @@ class M2Trainer:
 
         Parameters
         ----------
-        model : ConditionalScoreNet
+        model : ScoreNetModule
             Current score network.
         val_batch : RealDSMBatch
             Fixed validation batch.
@@ -850,10 +856,7 @@ def _build_m2_trainer(
     sample_t_eps = resolve_sample_t_eps(config.sample.t_eps, protocol.t_eps)
     bundle = M2TrainerBundle(
         config=config,
-        model=ConditionalScoreNet(
-            key_model,
-            default_score_net_config(config.data.n_features),
-        ),
+        model=build_score_net(key_model, config.model),
         loss_fn=RealConditionalDSMLoss(
             sde,
             dsm_settings_from_real_config(config),
@@ -958,7 +961,7 @@ class _GradHygiene:
         self.grad_norms.extend(totals.grad_norms)
 
 
-def _parameter_count(model: ConditionalScoreNet) -> int:
+def _parameter_count(model: ScoreNetModule) -> int:
     """Count array parameters in an Equinox model."""
     leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
     return int(sum(int(np.asarray(leaf).size) for leaf in leaves))
@@ -966,7 +969,7 @@ def _parameter_count(model: ConditionalScoreNet) -> int:
 
 def _train_meta_payload(
         config: RealM2Config,
-        best_model: ConditionalScoreNet,
+        best_model: ScoreNetModule,
         hygiene: _GradHygiene,
         selected_epoch: int | None,
 ) -> dict[str, Any]:

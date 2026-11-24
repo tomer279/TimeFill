@@ -212,19 +212,24 @@ class ImputationEvaluator:
     ------------------
     coverage_levels : tuple of float
         Central predictive interval levels (default 0.5 and 0.9).
+    point_estimate : str
+        ``mean`` (legacy) or ``median`` for MAE only.
     """
 
     def __init__(
             self,
             coverage_levels: tuple[float, ...] = _COVERAGE_LEVELS,
+            point_estimate: str = _POINT_ESTIMATE_MEAN,
     ) -> None:
-        """Store coverage levels used by ``compute``.
+        """Store coverage levels and MAE point-estimate mode.
 
         Parameters
         ----------
         coverage_levels : tuple of float, optional
             Central interval levels in ``(0, 1]``. Defaults to
             ``(0.5, 0.9)``.
+        point_estimate : str, optional
+            ``mean`` (legacy) or ``median`` for MAE only.
         """
         if len(coverage_levels) != len(_COVERAGE_LEVELS):
             raise ValueError(
@@ -236,7 +241,14 @@ class ImputationEvaluator:
                 raise ValueError(
                     f"coverage level must be in (0, 1], got {level}"
                 )
+        if point_estimate not in _ALLOWED_POINT_ESTIMATE:
+            raise ValueError(
+                "point_estimate must be one of "
+                f"{sorted(_ALLOWED_POINT_ESTIMATE)}, "
+                f"got {point_estimate!r}"
+            )
         self.coverage_levels = coverage_levels
+        self.point_estimate = point_estimate
 
     def compute(self, tensors: EvalTensors) -> MetricsTable:
         """Compute the M1 masked metrics table.
@@ -254,7 +266,9 @@ class ImputationEvaluator:
         tensors.validate_shapes()
         level_50, level_90 = self.coverage_levels
         return MetricsTable(
-            mae=float(masked_mae(tensors)),
+            mae=float(
+                masked_mae(tensors, point_estimate=self.point_estimate)
+            ),
             rmse=float(masked_rmse(tensors)),
             crps=float(empirical_crps(tensors)),
             coverage_50=float(interval_coverage(tensors, level_50)),

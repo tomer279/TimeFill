@@ -3,8 +3,7 @@
 # See ASSUMPTIONS.md (Milestone 7.5). Flags are parsed in WP0; consumers land
 # in WP1–WP5. Artifacts go under artifacts/m7_5/train/ (never overwrite m2).
 #
-# WP4 wires EMA / schedule / select_by / masks / eps + sample.t_eps.
-# Still refuses WP3 model.* and WP5 transform until those WPs land.
+# WP7 wires model.* (tcn_v2) + sidecar; WP4/WP5 train flags already live.
 # Hygiene train: legacy model + empty transform + WP4 train flags.
 
 data:

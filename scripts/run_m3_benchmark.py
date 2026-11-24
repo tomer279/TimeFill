@@ -41,15 +41,13 @@ from src.eval.m3_benchmark import (
     build_protocol_grid,
     load_split_window_bundle,
 )
-from src.models.score_net import (
-    ConditionalScoreNet,
-    default_score_net_config,
-)
-from src.train.artifacts import load_checkpoint
+from src.sample.reverse_sde import resolve_sample_t_eps
+from src.train.artifacts import load_checkpoint_with_config
 # pylint: enable=wrong-import-position
 
 _DEFAULT_BENCH = _REPO_ROOT / "configs" / "bench_m3.yaml"
 _DEFAULT_REAL = _REPO_ROOT / "configs" / "real_m2.yaml"
+_DEFAULT_POINT_ESTIMATE = "mean"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -160,17 +158,21 @@ class SampleKnobs:
         Reverse-SDE Euler steps.
     diffusion_impl : str
         ``dense`` (legacy) or ``diagonal``.
+    point_estimate : str
+        ``mean`` (legacy) or ``median`` for MAE.
     """
 
     k_samples: int
     solver_steps: int
     diffusion_impl: str = "dense"
+    point_estimate: str = _DEFAULT_POINT_ESTIMATE
 
     def describe(self) -> str:
         """Return a short sample/solver summary."""
         return (
             f"K={self.k_samples}, solver_steps={self.solver_steps}, "
-            f"diffusion_impl={self.diffusion_impl}"
+            f"diffusion_impl={self.diffusion_impl}, "
+            f"point_estimate={self.point_estimate}"
         )
 
     def as_dict(self) -> dict[str, int | str]:
@@ -179,6 +181,7 @@ class SampleKnobs:
             "k_samples": int(self.k_samples),
             "solver_steps": int(self.solver_steps),
             "diffusion_impl": str(self.diffusion_impl),
+            "point_estimate": str(self.point_estimate),
         }
 
 
@@ -237,16 +240,19 @@ class BenchRunKnobs:
     Instance variables
     ------------------
     sample : SampleKnobs
-        ``K`` and solver steps.
+        ``K``, solver steps, diffusion impl, point estimate.
     seeds : SeedPair
-        Mask and sampler seeds.
+        First seed pair (legacy single-run field).
     selection : BenchSelection
         Split / methods / feature count.
+    seed_pairs : tuple of SeedPair
+        Cartesian product of mask × sample seeds.
     """
 
     sample: SampleKnobs
     seeds: SeedPair
     selection: BenchSelection
+    seed_pairs: tuple[SeedPair, ...] = ()
 
     def describe(self) -> str:
         """Return a short run-knob summary."""
@@ -316,6 +322,11 @@ class BenchM3Plan:
         return self.knobs.seeds
 
     @property
+    def seed_pairs(self) -> tuple[SeedPair, ...]:
+        """Return the full mask × sample seed grid."""
+        return self.knobs.seed_pairs
+
+    @property
     def selection(self) -> BenchSelection:
         """Return split / method selection."""
         return self.knobs.selection
@@ -340,6 +351,7 @@ class BenchM3Plan:
             seeds=self.knobs.seeds,
             k_samples=self.knobs.sample.k_samples,
             artifact_dir=self.paths.artifact_dir,
+            point_estimate=str(self.knobs.sample.point_estimate),
         )
 
 
@@ -415,6 +427,9 @@ class BenchM3ConfigLoader:
         k_samples = int(sample_raw["K_samples"])
         solver_steps = int(sample_raw["solver_steps"])
         diffusion_impl = str(sample_raw.get("diffusion_impl", "dense"))
+        point_estimate = str(
+            sample_raw.get("point_estimate", _DEFAULT_POINT_ESTIMATE)
+        )
         if smoke:
             split_name = str(smoke_cfg.get("split", split_name))
             max_windows = smoke_cfg.get("max_windows")
@@ -437,17 +452,17 @@ class BenchM3ConfigLoader:
                 str(name) for name in (data.get("feature_names") or ())
             ),
         )
+        seed_pairs = _expand_seed_pairs(seeds_raw)
         knobs = BenchRunKnobs(
             sample=SampleKnobs(
                 k_samples=k_samples,
                 solver_steps=solver_steps,
                 diffusion_impl=diffusion_impl,
+                point_estimate=point_estimate,
             ),
-            seeds=SeedPair(
-                mask=int(seeds_raw["mask"]),
-                sample=int(seeds_raw["sample"]),
-            ),
+            seeds=seed_pairs[0],
             selection=selection,
+            seed_pairs=seed_pairs,
         )
         return BenchM3Plan(
             paths=paths,
@@ -507,7 +522,7 @@ def load_impute_context(
     plan : BenchM3Plan
         Resolved bench plan (``K`` / solver steps / ``F``).
     real_config_path : pathlib.Path
-        ``real_m2.yaml`` for SDE / ``t_eps``.
+        Real YAML for SDE / parameterization / observed mode / ``t_eps``.
 
     Returns
     -------
@@ -516,18 +531,66 @@ def load_impute_context(
     """
     real_cfg = load_real_m2_config(real_config_path)
     key = jax.random.PRNGKey(real_cfg.train.protocol.seed)
-    template = ConditionalScoreNet(
+    model = load_checkpoint_with_config(
+        plan.paths.checkpoint,
+        plan.selection.n_features,
         key,
-        default_score_net_config(plan.selection.n_features),
     )
-    model = load_checkpoint(plan.paths.checkpoint, template)
+    protocol = real_cfg.train.protocol
     return ImputeContextRequest(
         model=model,
         sde_cfg=real_cfg.sde,
-        t_eps=float(real_cfg.train.protocol.t_eps),
+        t_eps=resolve_sample_t_eps(real_cfg.sample.t_eps, protocol.t_eps),
         solver_steps=plan.sample.solver_steps,
         diffusion_impl=str(plan.sample.diffusion_impl),
+        observed_mode=str(real_cfg.sample.observed_mode),
+        parameterization=str(protocol.parameterization),
     ).build()
+
+
+def _expand_seed_pairs(seeds_raw: Mapping[str, Any]) -> tuple[SeedPair, ...]:
+    """Expand scalar or list mask/sample seeds into a Cartesian product."""
+    mask_seeds = _as_seed_tuple(seeds_raw["mask"])
+    sample_seeds = _as_seed_tuple(seeds_raw["sample"])
+    return tuple(
+        SeedPair(mask=mask_seed, sample=sample_seed)
+        for mask_seed in mask_seeds
+        for sample_seed in sample_seeds
+    )
+
+
+def _as_seed_tuple(raw: Any) -> tuple[int, ...]:
+    """Normalize a scalar or sequence of seeds to a non-empty int tuple."""
+    if isinstance(raw, (list, tuple)):
+        values = tuple(int(item) for item in raw)
+    else:
+        values = (int(raw),)
+    if not values:
+        raise ValueError("seeds.mask / seeds.sample must be non-empty")
+    return values
+
+
+def require_single_seed_run(plan: BenchM3Plan) -> None:
+    """Refuse multi-seed plans until the seed-grid run loop exists.
+
+    Parameters
+    ----------
+    plan : BenchM3Plan
+        Resolved bench plan.
+
+    Raises
+    ------
+    NotImplementedError
+        When ``len(plan.seed_pairs) > 1`` (would silently use the first pair).
+    """
+    n_pairs = len(plan.seed_pairs)
+    if n_pairs > 1:
+        # shortcut: Phase 3 loops seed_pairs; until then refuse list seeds.
+        raise NotImplementedError(
+            "seed-grid run loop not wired yet; "
+            f"got {n_pairs} seed pairs. Use scalar seeds.mask / "
+            "seeds.sample (see bench_m3.yaml)."
+        )
 
 
 def main(argv: list[str] | None = None) -> list[dict]:
@@ -546,6 +609,7 @@ def main(argv: list[str] | None = None) -> list[dict]:
     args = parse_args(argv)
     loader = BenchM3ConfigLoader(_REPO_ROOT)
     plan = loader.resolve(loader.load(args.config), smoke=bool(args.smoke))
+    require_single_seed_run(plan)
     print(plan.describe())
     data = load_data_bundle(plan)
     context = load_impute_context(plan, args.real_config)

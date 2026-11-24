@@ -255,7 +255,7 @@ class ValSnapshotPayload:
 
     Instance variables
     ------------------
-    model : ConditionalScoreNet
+    model : ScoreNetModule
         Current score network (unused by the WP5 stub).
     x0 : jax.Array
         Clean validation windows.
@@ -269,7 +269,7 @@ class ValSnapshotPayload:
         Directory for snapshot artifacts.
     """
 
-    model: ConditionalScoreNet
+    model: ScoreNetModule
     x0: jnp.ndarray
     mask: jnp.ndarray
     x_obs: jnp.ndarray

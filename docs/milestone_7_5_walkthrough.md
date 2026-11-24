@@ -1,5 +1,17 @@
 # Milestone 7.5 walkthrough
 
+## WP7 Phase 0–1 — Train/bench wiring (pre-rebenchmark)
+
+- Lifted `model.*` refuse; trainer builds `build_score_net(config.model)` and
+  writes `model_config.json` beside best `.eqx`.
+- Bench loader: seed lists → `seed_pairs` (3×3), `point_estimate` → MAE,
+  sidecar load + `ScoreFromEps` / `sample.t_eps` / `observed_mode`,
+  `block.extra_lens` for block-16 extension.
+- Decision: `main()` still runs the first seed pair only; Cartesian loop is
+  Phase 3. `replace_noised` train still refused.
+- Commands:
+  `pytest tests/test_wp7_wiring.py tests/test_wp4_train_hygiene.py::test_assert_wp0_allows_real_m7_5 -q`
+
 ## WP8 — Adapt honesty + M7.5 flag opt-in
 
 - `adapt.min_adapt_steps` (dataclass default `null`); product

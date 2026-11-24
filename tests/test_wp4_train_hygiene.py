@@ -12,8 +12,8 @@ test_per_window_mixed_yields_both_mask_types
     ``mixed_select=per_window`` puts random and block windows in one batch.
 test_block_len_range_lengths_within_bounds
     Block masks with a range only produce lengths in ``[lo, hi]``.
-test_assert_wp0_still_refuses_wp3_and_wp5
-    Train guard still blocks ``model.*`` / transform until those WPs.
+test_assert_wp0_allows_real_m7_5
+    Full ``real_m7_5.yaml`` clears the WP0 refuse guard (WP7 wiring).
 test_train_meta_writes_required_keys
     ``write_train_meta`` persists the WP4 required fields.
 test_fallback_best_ckpt_when_no_impute_selection
@@ -215,11 +215,10 @@ def test_block_len_range_lengths_within_bounds() -> None:
     assert int(lengths.max()) <= _RANGE_HI
 
 
-def test_assert_wp0_still_refuses_wp3_and_wp5() -> None:
-    """``real_m7_5.yaml`` still refuses WP3 model / WP5 transform flags."""
+def test_assert_wp0_allows_real_m7_5() -> None:
+    """Full ``real_m7_5.yaml`` is consumable after WP7 model wiring."""
     config = load_real_m2_config(REAL_M75_PATH)
-    with pytest.raises(NotImplementedError, match="model|transform"):
-        _assert_wp0_consumable(config)
+    _assert_wp0_consumable(config)
 
 
 def test_train_meta_writes_required_keys(tmp_path: Path) -> None:

@@ -26,10 +26,7 @@ from src.data.normalize import resolve_scaler_path
 from src.data.real import load_processed_dataset
 from src.data.real_config import RealM2Config
 from src.eval.split_pin import build_split_manifest, write_split_manifest
-from src.models.score_net import (
-    ConditionalScoreNet,
-    default_score_net_config,
-)
+from src.models.score_net import ConditionalScoreNet
 from src.train.artifacts import ArtifactPaths, resolve_artifact_paths
 from src.train.real_loss import (
     RealConditionalDSMLoss,
@@ -144,20 +141,10 @@ def assert_wp0_consumable(config: RealM2Config) -> None:
     ValueError
         From ``DSMLossSettings.validate`` (e.g. clean + nonzero obs weight).
     """
-    sample = config.sample
-    legacy_model = default_score_net_config(config.data.n_features)
-    # WP4 consumes EMA / schedule / select / masks / eps + sample.t_eps.
-    # WP5 consumes data.transform / allow_empty_feature_fallback.
-    # shortcut: refuse model.* until pre-WP7 wires build_score_net(config.model)
-    # + sidecar write.
-    checks: tuple[tuple[bool, str], ...] = (
-        (config.model != legacy_model, "model.*"),
-        (sample.observed_mode != "frozen_clean", "sample.observed_mode"),
-    )
-    bad = [name for is_bad, name in checks if is_bad]
-    if bad:
+    # shortcut: replace_noised train still unused outside ablation row 7.
+    if config.sample.observed_mode != "frozen_clean":
         raise NotImplementedError(
-            "M7.5 flags not wired yet: " + ", ".join(bad)
+            "M7.5 flags not wired yet: sample.observed_mode"
         )
     dsm_settings_from_real_config(config)
 

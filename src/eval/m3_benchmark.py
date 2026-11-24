@@ -77,7 +77,7 @@ from src.eval.metrics import (
     masked_rmse_per_feature,
 )
 from src.eval.plots import ImputationPlotData
-from src.models.score_net import ConditionalScoreNet
+from src.models.score_from_eps import as_score_model
 from src.sample.reverse_sde import (
     ImputeContext,
     ImputeQuery,
@@ -86,8 +86,10 @@ from src.sample.reverse_sde import (
     grid_timestamps,
 )
 from src.sde.vp_sde import VPSDE
+from src.train.artifacts import ScoreNetModule
 
 _COVERAGE_50 = 0.5
+_DEFAULT_POINT_ESTIMATE = "mean"
 _COVERAGE_90 = 0.9
 
 _POINT_METHODS = point_method_names()
@@ -123,6 +125,7 @@ class RunGrid:
     seeds: SeedPair
     k_samples: int
     artifact_dir: Path
+    point_estimate: str = _DEFAULT_POINT_ESTIMATE
 
     def n_protocols(self) -> int:
         """Return the number of protocols."""
@@ -146,8 +149,8 @@ class ImputeContextRequest:
 
     Instance variables
     ------------------
-    model : ConditionalScoreNet
-        Loaded score network.
+    model : ScoreNetModule
+        Loaded score network (raw; may be wrapped for ``eps``).
     sde_cfg : SdeConfig
         ``SdeConfig`` from ``real_m2.yaml``.
     t_eps : float
@@ -156,24 +159,36 @@ class ImputeContextRequest:
         Euler–Maruyama steps (bench or smoke).
     diffusion_impl : str
         ``dense`` (legacy) or ``diagonal``.
+    observed_mode : str
+        ``frozen_clean`` or ``replace_noised``.
+    parameterization : str
+        ``score`` (legacy) or ``eps``.
     """
 
-    model: ConditionalScoreNet
+    model: ScoreNetModule
     sde_cfg: SdeConfig
     t_eps: float
     solver_steps: int
     diffusion_impl: str = "dense"
+    observed_mode: str = "frozen_clean"
+    parameterization: str = "score"
 
     def build(self) -> ImputeContext:
         """Return a validated ``ImputeContext``."""
+        sde = VPSDE(self.sde_cfg)
         settings = ImputeSolverSettings(
             solver_steps=int(self.solver_steps),
             t_eps=float(self.t_eps),
+            observed_mode=str(self.observed_mode),
             diffusion_impl=str(self.diffusion_impl),
         )
         context = ImputeContext(
-            model=self.model,
-            sde=VPSDE(self.sde_cfg),
+            model=as_score_model(
+                self.model,
+                sde,
+                str(self.parameterization),
+            ),
+            sde=sde,
             settings=settings,
         )
         context.validate()
@@ -183,7 +198,8 @@ class ImputeContextRequest:
         """Return a short solver summary."""
         return (
             f"solver_steps={self.solver_steps}, t_eps={self.t_eps}, "
-            f"diffusion_impl={self.diffusion_impl}"
+            f"diffusion_impl={self.diffusion_impl}, "
+            f"parameterization={self.parameterization}"
         )
 
 
@@ -300,9 +316,13 @@ class _ScoreAndPlotHelpers:
         Write a comparison PNG.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+            self,
+            point_estimate: str = _DEFAULT_POINT_ESTIMATE,
+    ) -> None:
         """Create evaluator and plotter instances."""
-        self._evaluator = ImputationEvaluator()
+        self._point_estimate = point_estimate
+        self._evaluator = ImputationEvaluator(point_estimate=point_estimate)
         self._plotter = BenchmarkComparisonPlotter()
 
     def score(self, score_input: MethodScoreInput) -> MetricsTable:
@@ -357,7 +377,9 @@ class M3BenchmarkRunner:
         self.context = context
         self.grid = grid
         self.paths = M3ArtifactPaths(grid.artifact_dir)
-        self._helpers = _ScoreAndPlotHelpers()
+        self._helpers = _ScoreAndPlotHelpers(
+            point_estimate=str(grid.point_estimate),
+        )
 
     def run(self) -> list[MetricRecord]:
         """Run all protocols × methods and write artifacts.
@@ -557,7 +579,10 @@ class M3BenchmarkRunner:
             if method not in self.grid.methods:
                 continue
             tensors = pack.as_eval_tensors()
-            per_mae = masked_mae_per_feature(tensors)
+            per_mae = masked_mae_per_feature(
+                tensors,
+                point_estimate=str(self.grid.point_estimate),
+            )
             per_rmse = masked_rmse_per_feature(tensors)
             per_crps = empirical_crps_per_feature(tensors)
             per_c50 = interval_coverage_per_feature(tensors, _COVERAGE_50)

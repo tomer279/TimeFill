@@ -358,7 +358,11 @@ def test_per_feature_rows_uses_names_and_differing_metrics() -> None:
     )
     runner = object.__new__(M3BenchmarkRunner)
     runner.data = DataBundle(windows=windows, scaler=scaler)
-    runner.grid = type("Grid", (), {"methods": ("timefill",)})()
+    runner.grid = type(
+        "Grid",
+        (),
+        {"methods": ("timefill",), "point_estimate": "mean"},
+    )()
     pack = MethodScoreInput(
         truth=tensors.truth,
         mean=tensors.mean,

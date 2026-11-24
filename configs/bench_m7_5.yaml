@@ -1,7 +1,8 @@
-# Milestone 7.5 benchmark config (WP0 scaffolding; seed grid runs in WP7).
-# Same protocols as bench_m3.yaml. Checkpoint under artifacts/m7_5/train/.
-# seeds.mask / seeds.sample are lists for the WP7 grid; the M3 loader still
-# expects scalars until WP7 — do not pass this file to run_m3_benchmark yet.
+# Milestone 7.5 benchmark (WP7). Checkpoint under artifacts/m7_5/train/.
+# Seed lists expand to a 3×3 Cartesian grid (Phase 3 run loop). Until that
+# loop lands, run_m3_benchmark refuses len(seed_pairs) > 1. block.extra_lens
+# are extension rows (not the frozen M3 grid).
+# Use --real-config configs/real_m7_5.yaml.
 
 data:
   processed_dir: data/processed/m2
@@ -26,6 +27,7 @@ protocols:
   block:
     enabled: true
     block_len: 8
+    extra_lens: [16]
 
 sample:
   K_samples: 50

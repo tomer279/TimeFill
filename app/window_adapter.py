@@ -74,6 +74,7 @@ _DEFAULT_MIN_OBSERVED_PER_FEATURE = 0.05
 _MASK_COMPARE_TOL = 1e-6
 _HOUR_DELTA = np.timedelta64(1, "h")
 _HOUR_UNIT = "h"
+_PAD_ROW_INDEX = -1
 # shortcut: fixed 0.01 threshold, promote to ingest_m6.yaml if product needs a dial.
 _MAX_DUPLICATE_HOUR_SHARE = 0.01
 _MIN_ROWS_PER_DUP_HOUR = 2

@@ -1,0 +1,63 @@
+# Milestone 7.5 upload-adapt opt-in (loss/sample flags).
+# Legacy product path stays configs/adapt_m7.yaml.
+# Scratch adapt only for parameterization: eps (fine_tune stays score).
+#
+# CLI:
+#   python scripts/adapt_upload_m7.py \
+#     --csv tests/fixtures/toy_non_beijing.csv \
+#     --config configs/adapt_m7_5.yaml
+#
+# Artifacts under adapt.artifact_dir / <run_id>/. Never write claim m2/m3 roots.
+
+adapt:
+  default_mode: scratch
+  allow_fine_tune_when_f_matches: true
+  require_feature_name_match_for_fine_tune: true
+  base_checkpoint: artifacts/m2/checkpoints/best_score_net.eqx
+  base_scaler: artifacts/m2/checkpoints/feature_scaler.npz
+  artifact_dir: artifacts/m7_5/adapt
+  timeout_seconds: 600
+  min_windows: 2
+  train_fraction: 0.80
+  smoke_mcar_rate: 0.30
+  allow_empty_feature_fallback: false
+  min_adapt_steps: 200
+
+window:
+  seq_len: 64
+  max_windows: 4
+
+train:
+  lr: 0.0003
+  # Same smoke budget as adapt_m7.yaml (5×20=100 < min_adapt_steps 200 →
+  # status smoke_only). Raise epochs/steps for a real adapt if needed.
+  epochs: 5
+  steps_per_epoch: 20
+  batch_size: 4
+  weight_decay: 0.0001
+  seed: 0
+  t_eps: 1.0e-3
+  obs_loss_weight: 0.0
+  grad_clip_norm: 1.0
+  mask_mode: random
+  parameterization: eps
+  observed_input: clean
+
+sde:
+  beta_min: 0.1
+  beta_max: 20.0
+  T_diff: 1.0
+
+sample:
+  K_samples: 8
+  solver_steps: 50
+  t_eps: 1.0e-3
+  observed_mode: frozen_clean
+  diffusion_impl: diagonal
+
+seeds:
+  mask: 0
+  sample: 1
+
+data:
+  fixture_csv: tests/fixtures/toy_non_beijing.csv

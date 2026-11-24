@@ -23,7 +23,6 @@ test_legacy_adapt_yaml_keeps_legacy_solve_defaults
 from __future__ import annotations
 
 import itertools
-import json
 from pathlib import Path
 from typing import Any
 
@@ -179,7 +178,7 @@ def _synthetic_windows() -> AdaptWindowTensors:
 
 
 def _assert_no_promoted_artifacts(run_dir: Path) -> None:
-    """Assert checkpoint / scaler absent; meta not success if present.
+    """Assert abort left no checkpoint, scaler, or adapt_meta.
 
     Parameters
     ----------
@@ -188,10 +187,7 @@ def _assert_no_promoted_artifacts(run_dir: Path) -> None:
     """
     assert not (run_dir / "best_score_net.eqx").exists()
     assert not (run_dir / "feature_scaler.npz").exists()
-    meta_path = run_dir / "adapt_meta.json"
-    if meta_path.is_file():
-        payload = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert payload.get("status") != "success"
+    assert not (run_dir / "adapt_meta.json").exists()
 
 
 def _fake_session(tmp_path: Path, config: AdaptM7Config) -> AdaptSessionResult:

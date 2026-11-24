@@ -29,6 +29,8 @@ allowed_adapt_modes
     Frozen set of legal adapt mode strings.
 default_adapt_mode
     Product default mode string (``scratch``).
+adapt_budget_status
+    ``success`` vs ``smoke_only`` from epochs × steps vs ``min_adapt_steps``.
 """
 
 from __future__ import annotations
@@ -57,6 +59,38 @@ _DEFAULT_DIFFUSION_IMPL = "dense"
 _ALLOWED_OBSERVED_MODE = frozenset({"frozen_clean", "replace_noised"})
 _ALLOWED_DIFFUSION_IMPL = frozenset({"dense", "diagonal"})
 _REQUIRED_ROOT_KEYS = ("adapt", "train", "sde", "sample")
+_STATUS_SUCCESS = "success"
+_STATUS_SMOKE_ONLY = "smoke_only"
+
+
+def adapt_budget_status(
+        epochs: int,
+        steps_per_epoch: int,
+        min_adapt_steps: int | None,
+) -> str:
+    """Return ``success`` or ``smoke_only`` from the adapt step budget.
+
+    Parameters
+    ----------
+    epochs : int
+        ``train.epochs``.
+    steps_per_epoch : int
+        ``train.steps_per_epoch``.
+    min_adapt_steps : int or None
+        Honesty threshold; ``None`` disables the check (legacy).
+
+    Returns
+    -------
+    str
+        ``smoke_only`` when ``epochs * steps_per_epoch < min_adapt_steps``;
+        otherwise ``success``.
+    """
+    if min_adapt_steps is None:
+        return _STATUS_SUCCESS
+    total_steps = int(epochs) * int(steps_per_epoch)
+    if total_steps < int(min_adapt_steps):
+        return _STATUS_SMOKE_ONLY
+    return _STATUS_SUCCESS
 
 
 def allowed_adapt_modes() -> frozenset[str]:
@@ -106,6 +140,9 @@ class AdaptCaps:
         Artificial MCAR rate for DSM during adapt.
     allow_empty_feature_fallback : bool
         Legacy silent identity scaler when a train feature has no obs.
+    min_adapt_steps : int or None
+        Mark ``adapt_meta`` ``smoke_only`` when total steps are below this;
+        ``None`` disables (legacy default).
     """
 
     artifact_dir: str
@@ -114,6 +151,7 @@ class AdaptCaps:
     train_fraction: float
     smoke_mcar_rate: float
     allow_empty_feature_fallback: bool = True
+    min_adapt_steps: int | None = None
 
     def validate(self) -> None:
         """Raise ``ValueError`` if runtime caps are invalid."""
@@ -136,13 +174,18 @@ class AdaptCaps:
             )
         if not self.artifact_dir:
             raise ValueError("artifact_dir must be a non-empty path string")
+        if self.min_adapt_steps is not None and self.min_adapt_steps <= 0:
+            raise ValueError(
+                "min_adapt_steps must be positive when set, "
+                f"got {self.min_adapt_steps}"
+            )
 
-    def to_dict(self) -> dict[str, float | int | str | bool]:
+    def to_dict(self) -> dict[str, float | int | str | bool | None]:
         """Return a JSON-serializable dict of cap fields.
 
         Returns
         -------
-        dict of str to float or int or str or bool
+        dict of str to float or int or str or bool or None
             Cap field name to value.
         """
         return {
@@ -154,6 +197,7 @@ class AdaptCaps:
             "allow_empty_feature_fallback": (
                 self.allow_empty_feature_fallback
             ),
+            "min_adapt_steps": self.min_adapt_steps,
         }
 
 
@@ -672,6 +716,7 @@ def apply_adapt_cli_overrides(
             allow_empty_feature_fallback=(
                 config.caps.allow_empty_feature_fallback
             ),
+            min_adapt_steps=config.caps.min_adapt_steps,
         ),
         mode=config.mode,
         geometry=AdaptGeometry(
@@ -737,6 +782,9 @@ def _parse_adapt_m7_mapping(raw: Mapping[str, Any]) -> AdaptM7Config:
             allow_empty_feature_fallback=bool(
                 adapt.get("allow_empty_feature_fallback", True)
             ),
+            min_adapt_steps=_optional_min_adapt_steps(
+                adapt.get("min_adapt_steps")
+            ),
         ),
         mode=AdaptModeSection(
             default_mode=str(adapt.get("default_mode", _MODE_SCRATCH)),
@@ -797,3 +845,21 @@ def _optional_sample_t_eps(raw: Any) -> float | None:
     if raw is None:
         return None
     return float(raw)
+
+
+def _optional_min_adapt_steps(raw: Any) -> int | None:
+    """Parse optional ``adapt.min_adapt_steps`` (``None`` disables).
+
+    Parameters
+    ----------
+    raw : Any
+        YAML value or ``None``.
+
+    Returns
+    -------
+    int or None
+        Positive int when set; ``None`` when absent.
+    """
+    if raw is None:
+        return None
+    return int(raw)

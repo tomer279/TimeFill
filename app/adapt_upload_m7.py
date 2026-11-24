@@ -55,7 +55,10 @@ from app.flexible_ingest import (
     ingest_flexible_csv,
 )
 # Factory lives in adapt_session_ui (no Streamlit import at module top).
-from app.adapt_session_ui import imputer_from_adapt_result
+from app.adapt_session_ui import (
+    imputer_from_adapt_result,
+    smoke_only_warning_text,
+)
 from app.preview_ingest import (
     MODE_FLEXIBLE,
     FlexiblePreviewKnobs,
@@ -677,12 +680,17 @@ def _print_success(
         Export flags.
     """
     session = result.session
+    status = str(session.meta.get("status", ""))
     print(
         f"run_id={session.run_id} "
         f"run_dir={session.run_dir} "
+        f"status={status} "
         f"F={session.meta.get('F')} "
         f"n_windows={session.meta.get('n_windows')} "
         f"mean_fill={result.mean_fill_path()}"
     )
+    warning = smoke_only_warning_text(status)
+    if warning:
+        print(warning)
     if flags.want_samples_export() and result.samples_path is not None:
         print(f"samples={result.samples_path}")

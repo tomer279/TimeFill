@@ -18,8 +18,12 @@ infer_column_roles
     Suggest roles from headers and sample rows.
 ingest_flexible_rows
     Validate hermetic string rows under a role map (infer if omitted).
+ingest_flexible_rows_noted
+    Same as ``ingest_flexible_rows``, plus infer drop/exclude notes.
 ingest_flexible_csv
     Load a CSV path and return a ``ValidatedFrame``.
+ingest_flexible_csv_noted
+    Same as ``ingest_flexible_csv``, plus infer drop/exclude notes.
 """
 
 from __future__ import annotations
@@ -31,12 +35,13 @@ from pathlib import Path
 import numpy as np
 
 from app.schema_validate import (
+    MISSING_CELL_TOKENS,
     AppSchemaSpec,
     ValidatedFrame,
     validate_upload_rows,
 )
 
-_MISSING_TOKENS = frozenset({"", "na", "nan", "null", "none"})
+_MISSING_TOKENS = MISSING_CELL_TOKENS
 _ABSENT_TIMESTAMP = "__timefill_no_timestamp__"
 _DEFAULT_MAX_FEATURES = 32
 _DEFAULT_TIMESTAMP_HINTS = (
@@ -52,6 +57,20 @@ _DEFAULT_ENTITY_HINTS = (
     "station",
     "sensor",
     "sensor_id",
+)
+# Inference-only; explicit ColumnRoleMap may still select these.
+_FEATURE_EXCLUDE_NAMES = frozenset(
+    {
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "index",
+        "no",
+        "id",
+        "unnamed: 0",
+    }
 )
 
 
@@ -274,24 +293,7 @@ def infer_column_roles(
         If headers / rows are empty, no numeric features remain, or
         ``F > max_features``.
     """
-    config.validate()
-    if not headers:
-        raise ValueError("CSV has no header columns")
-    if not rows:
-        raise ValueError("CSV has no data rows")
-    timestamp = _pick_timestamp_column(headers, rows, config)
-    entity = _pick_entity_column(headers, config, timestamp)
-    reserved = {
-        name for name in (timestamp, entity) if name is not None
-    }
-    features = _pick_feature_columns(headers, rows, reserved)
-    role_map = ColumnRoleMap(
-        features=features,
-        timestamp=timestamp,
-        entity=entity,
-    )
-    role_map.validate()
-    _assert_within_feature_cap(role_map, config)
+    role_map, _notes = _infer_roles_and_notes(headers, rows, config)
     return role_map
 
 
@@ -326,21 +328,67 @@ def ingest_flexible_rows(
         On empty input, invalid maps, missing columns, non-numeric
         feature cells, or ``F`` above cap.
     """
+    frame, _notes = ingest_flexible_rows_noted(
+        rows,
+        headers,
+        role_map=role_map,
+        config=config,
+    )
+    return frame
+
+
+def ingest_flexible_rows_noted(
+        rows: list[dict[str, str]],
+        headers: tuple[str, ...],
+        role_map: ColumnRoleMap | None = None,
+        config: IngestInferConfig | None = None,
+) -> tuple[ValidatedFrame, tuple[str, ...]]:
+    """Validate flexible rows and return infer drop/exclude notes.
+
+    Parameters
+    ----------
+    rows : list of dict
+        Header-keyed cell strings.
+    headers : tuple of str
+        CSV header names in file order.
+    role_map : ColumnRoleMap or None, optional
+        Explicit roles; inferred when ``None``.
+    config : IngestInferConfig or None, optional
+        Inference / cap settings (defaults when ``None``).
+
+    Returns
+    -------
+    frame : ValidatedFrame
+        Parsed flexible-schema frame.
+    notes : tuple of str
+        Drop / exclude reasons from inference (empty when mapped).
+
+    Raises
+    ------
+    ValueError
+        On empty input, invalid maps, missing columns, non-numeric
+        feature cells, or ``F`` above cap.
+    """
     resolved = config if config is not None else IngestInferConfig()
     resolved.validate()
     if not headers:
         raise ValueError("CSV has no header columns")
     if not rows:
         raise ValueError("CSV has no data rows")
+    notes: tuple[str, ...] = ()
     active_map = role_map
     if active_map is None:
-        active_map = infer_column_roles(headers, rows, resolved)
+        active_map, notes = _infer_roles_and_notes(
+            headers,
+            rows,
+            resolved,
+        )
     else:
         active_map.validate()
         _assert_map_columns_present(active_map, set(headers))
         _assert_within_feature_cap(active_map, resolved)
     schema = active_map.to_app_schema()
-    return validate_upload_rows(rows, schema)
+    return validate_upload_rows(rows, schema), notes
 
 
 def ingest_flexible_csv(
@@ -370,13 +418,110 @@ def ingest_flexible_csv(
     ValueError
         If the file is empty, has no header, or fails flexible validation.
     """
+    frame, _notes = ingest_flexible_csv_noted(
+        path,
+        role_map=role_map,
+        config=config,
+    )
+    return frame
+
+
+def ingest_flexible_csv_noted(
+        path: Path,
+        role_map: ColumnRoleMap | None = None,
+        config: IngestInferConfig | None = None,
+) -> tuple[ValidatedFrame, tuple[str, ...]]:
+    """Load a CSV and return the frame plus infer drop/exclude notes.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        CSV path.
+    role_map : ColumnRoleMap or None, optional
+        Explicit roles; inferred when ``None``.
+    config : IngestInferConfig or None, optional
+        Inference / cap settings (defaults when ``None``).
+
+    Returns
+    -------
+    frame : ValidatedFrame
+        Parsed flexible-schema frame.
+    notes : tuple of str
+        Drop / exclude reasons from inference (empty when mapped).
+
+    Raises
+    ------
+    ValueError
+        If the file is empty, has no header, or fails flexible validation.
+    """
     headers, rows = _read_csv_table(Path(path))
-    return ingest_flexible_rows(
+    return ingest_flexible_rows_noted(
         rows,
         headers,
         role_map=role_map,
         config=config,
     )
+
+
+def _infer_roles_and_notes(
+        headers: tuple[str, ...],
+        rows: list[dict[str, str]],
+        config: IngestInferConfig,
+) -> tuple[ColumnRoleMap, tuple[str, ...]]:
+    """Infer roles and collect per-column drop / exclude notes.
+
+    Parameters
+    ----------
+    headers : tuple of str
+        CSV header names.
+    rows : list of dict
+        Sample rows.
+    config : IngestInferConfig
+        Hints and ``max_features`` cap.
+
+    Returns
+    -------
+    role_map : ColumnRoleMap
+        Inferred roles.
+    notes : tuple of str
+        Human-readable drop / exclude lines.
+
+    Raises
+    ------
+    ValueError
+        If headers / rows are empty, no numeric features remain, or
+        ``F > max_features``.
+    """
+    config.validate()
+    if not headers:
+        raise ValueError("CSV has no header columns")
+    if not rows:
+        raise ValueError("CSV has no data rows")
+    notes: list[str] = []
+    timestamp, rejected_ts = _pick_timestamp_column(
+        headers,
+        rows,
+        config,
+        notes,
+    )
+    entity = _pick_entity_column(headers, config, timestamp)
+    reserved = {
+        name for name in (timestamp, entity) if name is not None
+    } | rejected_ts
+    features = _pick_feature_columns(headers, rows, reserved, notes)
+    role_map = ColumnRoleMap(
+        features=features,
+        timestamp=timestamp,
+        entity=entity,
+    )
+    try:
+        role_map.validate()
+    except ValueError as exc:
+        if notes:
+            raise ValueError(f"{exc}; {'; '.join(notes)}") from exc
+        raise
+    _assert_within_feature_cap(role_map, config)
+    return role_map, tuple(notes)
 
 
 def _optional_str_field(mapping: dict, key: str) -> str | None:
@@ -528,8 +673,12 @@ def _pick_timestamp_column(
         headers: tuple[str, ...],
         rows: list[dict[str, str]],
         config: IngestInferConfig,
-) -> str | None:
-    """Choose a timestamp column by name hint, else datetime-like values.
+        notes: list[str],
+) -> tuple[str | None, set[str]]:
+    """Choose a timestamp column by hint + datetime values, else values only.
+
+    Hinted columns that fail the datetime check are returned in
+    ``rejected`` so they are not used as features either.
 
     Parameters
     ----------
@@ -539,21 +688,36 @@ def _pick_timestamp_column(
         Sample rows.
     config : IngestInferConfig
         Timestamp name hints.
+    notes : list of str
+        Append-only drop / exclude reasons.
 
     Returns
     -------
-    str or None
+    timestamp : str or None
         Selected timestamp column, if any.
+    rejected : set of str
+        Hinted names that failed the datetime check.
     """
+    rejected: set[str] = set()
     for name in headers:
-        if _hint_match(name, config.timestamp_name_hints):
-            return name
+        if not _hint_match(name, config.timestamp_name_hints):
+            continue
+        reason = _timestamp_reject_reason(rows, name)
+        if reason is None:
+            return name, rejected
+        rejected.add(name)
+        notes.append(
+            f"excluded column {name!r}: not a usable timestamp "
+            f"({reason}; not used as a feature)"
+        )
     for name in headers:
+        if name in rejected:
+            continue
         if _column_is_numeric(rows, name):
             continue
-        if _column_is_datetime_like(rows, name):
-            return name
-    return None
+        if _timestamp_reject_reason(rows, name) is None:
+            return name, rejected
+    return None, rejected
 
 
 def _pick_entity_column(
@@ -589,6 +753,7 @@ def _pick_feature_columns(
         headers: tuple[str, ...],
         rows: list[dict[str, str]],
         reserved: set[str],
+        notes: list[str],
 ) -> tuple[str, ...]:
     """Select numeric columns not reserved for timestamp / entity.
 
@@ -600,6 +765,8 @@ def _pick_feature_columns(
         Sample rows.
     reserved : set of str
         Columns already assigned other roles.
+    notes : list of str
+        Append-only drop / exclude reasons.
 
     Returns
     -------
@@ -610,8 +777,15 @@ def _pick_feature_columns(
     for name in headers:
         if name in reserved:
             continue
+        if name.casefold() in _FEATURE_EXCLUDE_NAMES:
+            notes.append(
+                f"excluded column {name!r}: calendar/index-like name"
+            )
+            continue
         if _column_is_numeric(rows, name):
             selected.append(name)
+            continue
+        notes.append(f"dropped column {name!r}: non-numeric")
     return tuple(selected)
 
 
@@ -641,11 +815,59 @@ def _column_is_numeric(
     return True
 
 
+_FIRST_DATA_ROW = 1
+
+
+def _timestamp_reject_reason(
+        rows: list[dict[str, str]],
+        column: str,
+) -> str | None:
+    """Return why ``column`` is not a timestamp, or ``None`` if usable.
+
+    Matches ``_parse_timestamps``: every cell present, no NA tokens, whole
+    column converts to ``datetime64[s]``.
+
+    Parameters
+    ----------
+    rows : list of dict
+        CSV rows.
+    column : str
+        Column name.
+
+    Returns
+    -------
+    str or None
+        Short cause naming the first bad row/value, or ``None`` when OK.
+    """
+    if not rows:
+        return "no data rows"
+    texts: list[str] = []
+    for offset, row in enumerate(rows):
+        text = str(row.get(column, "")).strip()
+        data_row = _FIRST_DATA_ROW + offset
+        if not text:
+            return f"row {data_row} is empty"
+        if text.casefold() in _MISSING_TOKENS:
+            return f"row {data_row} is missing token {text!r}"
+        if not _looks_datetime(text):
+            return f"row {data_row} value {text!r} is not ISO datetime"
+        texts.append(text)
+    try:
+        parsed = np.asarray(texts, dtype="datetime64[s]")
+    except ValueError:
+        return "column does not convert to datetime64[s]"
+    if parsed.dtype.kind != "M":
+        return "column does not convert to datetime64[s]"
+    if bool(np.any(np.isnat(parsed))):
+        return "column contains NaT after datetime64[s] cast"
+    return None
+
+
 def _column_is_datetime_like(
         rows: list[dict[str, str]],
         column: str,
 ) -> bool:
-    """Return whether non-missing cells parse as datetimes.
+    """Return whether every cell parses as ``datetime64[s]`` (parser rules).
 
     Parameters
     ----------
@@ -657,18 +879,9 @@ def _column_is_datetime_like(
     Returns
     -------
     bool
-        ``True`` when at least one non-missing datetime cell exists and
-        every non-missing cell is datetime-like.
+        ``True`` when the whole column converts like the upload parser.
     """
-    saw_value = False
-    for row in rows:
-        text = str(row.get(column, "")).strip()
-        if text.lower() in _MISSING_TOKENS:
-            continue
-        if not _looks_datetime(text):
-            return False
-        saw_value = True
-    return saw_value
+    return _timestamp_reject_reason(rows, column) is None
 
 
 def _cell_is_numeric_or_missing(raw: str) -> bool:
@@ -685,7 +898,7 @@ def _cell_is_numeric_or_missing(raw: str) -> bool:
         ``True`` for floats / NA tokens (including NaN).
     """
     text = str(raw).strip()
-    if text.lower() in _MISSING_TOKENS:
+    if text.casefold() in _MISSING_TOKENS:
         return True
     try:
         number = float(text)
@@ -694,8 +907,11 @@ def _cell_is_numeric_or_missing(raw: str) -> bool:
     return bool(np.isfinite(number) or np.isnan(number))
 
 
+_BARE_DATETIME_WORDS = frozenset({"today", "now"})
+
+
 def _looks_datetime(text: str) -> bool:
-    """Return whether ``text`` parses as ``datetime64``.
+    """Return whether ``text`` is a plausible wall-clock datetime.
 
     Parameters
     ----------
@@ -705,10 +921,16 @@ def _looks_datetime(text: str) -> bool:
     Returns
     -------
     bool
-        ``True`` when NumPy accepts the string as datetime.
+        ``True`` when NumPy accepts the string as ``datetime64[s]``.
     """
+    folded = text.casefold()
+    if folded in _BARE_DATETIME_WORDS:
+        return False
+    # shortcut: digit-only / signed int cells are never timestamps
+    if text.lstrip("+-").isdigit():
+        return False
     try:
-        parsed = np.datetime64(text)
+        parsed = np.datetime64(text, "s")
     except ValueError:
         return False
     return not np.isnat(parsed)

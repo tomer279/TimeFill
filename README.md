@@ -211,8 +211,12 @@ pip install -e ".[app]"
 ```
 
 This installs the project in editable mode and pulls CPU-friendly defaults for
-JAX (via the `jax` package on PyPI). After install, `import src` and
-`pytest` should resolve from any working directory.
+JAX (via the `jax` package on PyPI). After install, `import src` should
+resolve from any working directory. For tests, also install the dev extra:
+
+```bash
+pip install -e ".[dev]"
+```
 
 ### JAX: CPU vs CUDA
 
@@ -230,8 +234,8 @@ GPU is optional for M1; smoke runs and tests are intended to work on CPU.
 
 ## How to run (M1)
 
-From the repo root (after `pip install -e .`, or via the script `sys.path`
-bootstrap):
+From the repo root (after `pip install -e ".[dev]"`, or via the script
+`sys.path` bootstrap):
 
 ```bash
 python scripts/run_m1_toy.py --config configs/toy_m1.yaml

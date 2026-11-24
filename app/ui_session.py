@@ -42,7 +42,7 @@ from pathlib import Path
 import pandas as pd  # type: ignore  # pylint: disable=import-error
 
 from app.adapt_session_ui import BoundAdaptSession
-from app.flexible_ingest import ingest_flexible_csv
+from app.flexible_ingest import ingest_flexible_csv_noted
 from app.m4_config import AppM4Config
 from app.preview_ingest import (
     MODE_EXACT_BEIJING,
@@ -319,10 +319,13 @@ class AdaptOutcome:
         Adapted batch when successful.
     adapt_error : str or None
         User-facing reject text when adapt failed.
+    column_notes : tuple of str
+        Flexible infer drop / exclude lines for the preview.
     """
 
     windows: AdaptedWindows | None
     adapt_error: str | None
+    column_notes: tuple[str, ...] = ()
 
     def has_windows(self) -> bool:
         """Return whether adapted windows are available.
@@ -628,13 +631,17 @@ def validate_and_adapt_upload(
             config.schema.window_request(config.smoke.max_windows),
         )
         return frame, AdaptOutcome(windows=windows, adapt_error=None)
-    frame = ingest_flexible_csv(path)
+    frame, column_notes = ingest_flexible_csv_noted(path)
     knobs = FlexiblePreviewKnobs(
         seq_len=config.schema.seq_len,
         max_windows=config.smoke.max_windows,
     )
     windows, adapt_error = try_adapt_flexible_windows(frame, knobs)
-    return frame, AdaptOutcome(windows=windows, adapt_error=adapt_error)
+    return frame, AdaptOutcome(
+        windows=windows,
+        adapt_error=adapt_error,
+        column_notes=column_notes,
+    )
 
 
 def payload_from_parts(
@@ -664,6 +671,7 @@ def payload_from_parts(
             ingest_mode=identity.ingest_mode(),
             windows=outcome.windows,
             adapt_error=outcome.error_text(),
+            column_notes=outcome.column_notes,
         )
     )
     gate = evaluate_impute_gate(

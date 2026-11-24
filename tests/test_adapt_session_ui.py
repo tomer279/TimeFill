@@ -9,7 +9,6 @@ import numpy as np
 
 from app.adapt_session_ui import (
     AdaptCapsDisplay,
-    AdaptLoopCapsView,
     AdaptRunRequest,
     caps_display_from_config,
     format_adapt_failure,
@@ -94,14 +93,12 @@ def test_fingerprint_changes_with_content_digest() -> None:
     assert digest_a != digest_b
 
 
-def test_caps_display_nested_under_attr_limit() -> None:
-    """AdaptCapsDisplay nests loop caps and stays within attr budget."""
+def test_caps_display_flat_caption_lines() -> None:
+    """AdaptCapsDisplay exposes plain caption lines and an ETA note."""
     cfg = load_adapt_m7_config(ADAPT_CFG)
     caps = caps_display_from_config(cfg, "scratch")
     assert isinstance(caps, AdaptCapsDisplay)
-    assert isinstance(caps.loop, AdaptLoopCapsView)
-    assert len(caps.__dataclass_fields__) <= 7
-    assert len(caps.loop.__dataclass_fields__) <= 7
+    assert not hasattr(caps, "loop")
     lines = caps.as_lines()
     assert any(line.startswith("epochs=") for line in lines)
     assert "timeout" in caps.eta_note().lower()

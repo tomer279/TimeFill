@@ -717,6 +717,14 @@ the audit. Audit items A5, A8, A9 and A11 are in Track A (WP0 / WP5).
   CI installs `.[dev]`; README install lines updated.
 - **Done when:** the preview explains every drop, and a plain
   `pip install -e .` doesn't install pytest.
+- **Done (2026-11-24):** Widened NA tokens (shared Exact+Flexible); calendar/
+  index excludes; timestamp only if every cell is `datetime64[s]` (failed
+  hints also leave features); preview warnings name each drop with cause;
+  removed `base_scaler` / `confirm_same_semantics`; flat caption strings;
+  `pytest` → `.[dev]`. Decisions: remove dead knobs (not wire); all cells
+  (stricter than plan “most”); digit/`today`/`now` rejected; CLI notes
+  deferred. Commands: `py -m pytest tests/test_wp_b5_ingest_cleanup.py -q`
+  → **11 passed**; `py -m pytest -q` → **266 passed** in ~131s.
 
 ### 9.3 Suggested order (Track B)
 

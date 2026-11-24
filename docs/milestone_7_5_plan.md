@@ -682,6 +682,13 @@ the audit. Audit items A5, A8, A9 and A11 are in Track A (WP0 / WP5).
   entry points from the same config and asserts identical settings
   (`ImputeSolverSettings.to_dict()`, SDE params, model config).
 - **Done when:** both tests are in CI; the duplicate code is deleted.
+- **Done (2026-11-24):** Shared `imputer_from_adapt_result` (CLI+UI); Fill
+  wires `as_score_model` / mode / diffusion / resolved `sample.t_eps`;
+  scratch accepts `eps`; fine_tune refuses non-`score`; `adapt_meta` records
+  solve flags. Decisions: no `session_assets.py`; Exact stays legacy dense;
+  adapt `model_config.json` sidecar deferred (meta is the record). Commands:
+  `py -m pytest tests/test_wp_b4_adapt_guarantees.py -q` → **7 passed**;
+  `py -m pytest -q` → **249 passed** in ~130s.
 
 #### WP-B5 — Ingest heuristics and cleanup (B13–B16)
 - **Flexible ingest:** widen missing tokens (`n/a`, `N/A`, `-`, `--`, `?`,

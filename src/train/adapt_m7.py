@@ -80,12 +80,14 @@ from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
 )
+from src.sample.reverse_sde import resolve_sample_t_eps
 from src.train.adapt_loop import run_capped_adapt_dsm
 from src.train.artifacts import load_checkpoint, save_checkpoint
 from src.train.real_pool import RealBatchPool
 
 _MODE_SCRATCH = default_adapt_mode()
 _MODE_FINE_TUNE = "fine_tune"
+_PARAM_SCORE = "score"
 _ALLOWED_MODES = allowed_adapt_modes()
 _DEFAULT_BASE_FEATURES = default_beijing_features()
 _MASK_TOL = 1e-6
@@ -429,6 +431,11 @@ class AdaptSessionRunner:
             Non-finite loss or wall-clock timeout.
         """
         request.validate()
+        policy = request.effective_policy()
+        _refuse_fine_tune_non_score(
+            policy,
+            str(request.config.train.protocol.parameterization),
+        )
         split = split_adapt_windows(
             request.windows.n_windows(),
             request.config.caps.train_fraction,
@@ -440,7 +447,6 @@ class AdaptSessionRunner:
                 request.config.caps.allow_empty_feature_fallback
             ),
         )
-        policy = request.effective_policy()
         key_model, key_train = jax.random.split(
             jax.random.PRNGKey(request.config.train.protocol.seed)
         )
@@ -637,6 +643,33 @@ def _build_adapt_model(
     )
 
 
+def _refuse_fine_tune_non_score(
+        policy: AdaptInitPolicy,
+        parameterization: str,
+) -> None:
+    """Refuse fine-tune when the base net is not a score checkpoint.
+
+    M2 claim weights output score; Fill wraps ``eps`` as ``ScoreFromEps``.
+    A short adapt cannot retrain score→eps, so this combination is banned.
+
+    Parameters
+    ----------
+    policy : AdaptInitPolicy
+        Resolved init policy.
+    parameterization : str
+        ``train.parameterization`` (``score`` or ``eps``).
+    """
+    if policy.resolved_mode() != _MODE_FINE_TUNE:
+        return
+    if parameterization == _PARAM_SCORE:
+        return
+    raise ValueError(
+        "Fine-tune refused: parameterization != 'score' "
+        f"(got {parameterization!r}). Base checkpoints are score nets; "
+        "use mode='scratch' for eps adapt."
+    )
+
+
 def _assert_fine_tune_allowed(
         windows: AdaptWindowTensors,
         policy: AdaptInitPolicy,
@@ -757,6 +790,15 @@ def _build_success_meta(
         "batch_size": int(request.config.geometry.batch_size),
         "timeout_seconds": float(request.config.caps.timeout_seconds),
         "observed_input": str(request.config.train.protocol.observed_input),
+        "parameterization": str(
+            request.config.train.protocol.parameterization
+        ),
+        "sample_t_eps": resolve_sample_t_eps(
+            request.config.sample.t_eps,
+            float(request.config.train.protocol.t_eps),
+        ),
+        "observed_mode": str(request.config.sample.observed_mode),
+        "diffusion_impl": str(request.config.sample.diffusion_impl),
         "claim_discipline": (
             "file-local adapt smoke; not a Beijing/M3 claim expansion"
         ),

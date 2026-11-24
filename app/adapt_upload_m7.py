@@ -54,7 +54,8 @@ from app.flexible_ingest import (
     column_role_map_from_mapping,
     ingest_flexible_csv,
 )
-from app.m4_config import AppM4SampleKnobs
+# Factory lives in adapt_session_ui (no Streamlit import at module top).
+from app.adapt_session_ui import imputer_from_adapt_result
 from app.preview_ingest import (
     MODE_FLEXIBLE,
     FlexiblePreviewKnobs,
@@ -62,7 +63,6 @@ from app.preview_ingest import (
 )
 from app.session_impute import (
     DemoMaskRequest,
-    SessionAssetRequest,
     SessionImputeRequest,
     SessionImputer,
 )
@@ -396,7 +396,7 @@ def run_adapt_upload_pipeline(
             artifact_root=paths.resolve_artifact_root(),
         )
     )
-    imputer = _session_imputer(session, config)
+    imputer = imputer_from_adapt_result(session, config)
     fill_result = imputer.impute(
         SessionImputeRequest(
             windows=windows,
@@ -505,41 +505,6 @@ def _to_adapt_tensors(windows: AdaptedWindows) -> AdaptWindowTensors:
         values=np.asarray(windows.values, dtype=np.float32),
         native_masks=np.asarray(windows.native_mask, dtype=np.float32),
         feature_names=tuple(windows.feature_names),
-    )
-
-
-def _session_imputer(
-        session: AdaptSessionResult,
-        config: AdaptM7Config,
-) -> SessionImputer:
-    """Build an imputer bound to the session model and scaler.
-
-    Parameters
-    ----------
-    session : AdaptSessionResult
-        Successful adapt outputs.
-    config : AdaptM7Config
-        SDE / ``t_eps`` / sample knobs.
-
-    Returns
-    -------
-    SessionImputer
-        Ready for reverse-SDE impute in original units.
-    """
-    sample = AppM4SampleKnobs(
-        k_samples=int(config.sample.k_samples),
-        solver_steps=int(config.sample.solver_steps),
-        seed_mask=int(config.sample.seed_mask),
-        seed_sample=int(config.sample.seed_sample),
-    )
-    return SessionImputer.from_session_assets(
-        SessionAssetRequest(
-            model=session.model,
-            scaler=session.scaler,
-            sde_cfg=config.sde,
-            t_eps=float(config.train.protocol.t_eps),
-            sample=sample,
-        )
     )
 
 

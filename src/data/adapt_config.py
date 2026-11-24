@@ -52,6 +52,10 @@ _DEFAULT_K_SAMPLES = 8
 _DEFAULT_SOLVER_STEPS = 50
 _DEFAULT_SEED_MASK = 0
 _DEFAULT_SEED_SAMPLE = 1
+_DEFAULT_OBSERVED_MODE = "frozen_clean"
+_DEFAULT_DIFFUSION_IMPL = "dense"
+_ALLOWED_OBSERVED_MODE = frozenset({"frozen_clean", "replace_noised"})
+_ALLOWED_DIFFUSION_IMPL = frozenset({"dense", "diagonal"})
 _REQUIRED_ROOT_KEYS = ("adapt", "train", "sde", "sample")
 
 
@@ -282,7 +286,7 @@ class AdaptSampleSection:
     Public methods
     --------------
     validate
-        Check positivity of ``K`` / steps.
+        Check positivity of ``K`` / steps and M7.5 solve flags.
     to_dict
         Serialize fields for metadata.
 
@@ -296,12 +300,21 @@ class AdaptSampleSection:
         PRNG seed for optional smoke corruption.
     seed_sample : int
         PRNG seed for reverse-SDE sampling.
+    t_eps : float or None
+        Sampler endpoint; ``None`` falls back to ``train.t_eps``.
+    observed_mode : str
+        ``frozen_clean`` (legacy) or ``replace_noised``.
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
     """
 
     k_samples: int
     solver_steps: int
     seed_mask: int
     seed_sample: int
+    t_eps: float | None = None
+    observed_mode: str = _DEFAULT_OBSERVED_MODE
+    diffusion_impl: str = _DEFAULT_DIFFUSION_IMPL
 
     def validate(self) -> None:
         """Raise ``ValueError`` if sample knobs are invalid."""
@@ -313,13 +326,27 @@ class AdaptSampleSection:
             raise ValueError(
                 f"solver_steps must be positive, got {self.solver_steps}"
             )
+        if self.t_eps is not None and self.t_eps <= 0.0:
+            raise ValueError(f"sample t_eps must be positive, got {self.t_eps}")
+        if self.observed_mode not in _ALLOWED_OBSERVED_MODE:
+            raise ValueError(
+                "observed_mode must be one of "
+                f"{sorted(_ALLOWED_OBSERVED_MODE)}, "
+                f"got {self.observed_mode!r}"
+            )
+        if self.diffusion_impl not in _ALLOWED_DIFFUSION_IMPL:
+            raise ValueError(
+                "diffusion_impl must be one of "
+                f"{sorted(_ALLOWED_DIFFUSION_IMPL)}, "
+                f"got {self.diffusion_impl!r}"
+            )
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dict of sample fields.
 
         Returns
         -------
-        dict of str to int
+        dict of str to Any
             Sample field name to value.
         """
         return {
@@ -327,6 +354,9 @@ class AdaptSampleSection:
             "solver_steps": self.solver_steps,
             "seed_mask": self.seed_mask,
             "seed_sample": self.seed_sample,
+            "t_eps": self.t_eps,
+            "observed_mode": self.observed_mode,
+            "diffusion_impl": self.diffusion_impl,
         }
 
 
@@ -529,6 +559,17 @@ class AdaptM7Config:
         self.train.validate()
         self.sde.validate()
         self.sample.validate()
+        sample_t_eps = self.sample.t_eps
+        resolved_t_eps = (
+            float(self.train.protocol.t_eps)
+            if sample_t_eps is None
+            else float(sample_t_eps)
+        )
+        if resolved_t_eps >= float(self.sde.t_diff):
+            raise ValueError(
+                "resolved sample t_eps must be < sde.T_diff; "
+                f"got t_eps={resolved_t_eps}, T_diff={self.sde.t_diff}"
+            )
 
     def to_train_config(self) -> TrainConfig:
         """Return the train section used for Optax.
@@ -646,6 +687,9 @@ def apply_adapt_cli_overrides(
             solver_steps=solver_steps,
             seed_mask=config.sample.seed_mask,
             seed_sample=config.sample.seed_sample,
+            t_eps=config.sample.t_eps,
+            observed_mode=config.sample.observed_mode,
+            diffusion_impl=config.sample.diffusion_impl,
         ),
     )
     updated.validate()
@@ -724,7 +768,32 @@ def _parse_adapt_m7_mapping(raw: Mapping[str, Any]) -> AdaptM7Config:
             ),
             seed_mask=int(seeds_raw.get("mask", _DEFAULT_SEED_MASK)),
             seed_sample=int(seeds_raw.get("sample", _DEFAULT_SEED_SAMPLE)),
+            t_eps=_optional_sample_t_eps(sample_raw.get("t_eps")),
+            observed_mode=str(
+                sample_raw.get("observed_mode", _DEFAULT_OBSERVED_MODE)
+            ).lower(),
+            diffusion_impl=str(
+                sample_raw.get("diffusion_impl", _DEFAULT_DIFFUSION_IMPL)
+            ).lower(),
         ),
     )
     config.validate()
     return config
+
+
+def _optional_sample_t_eps(raw: Any) -> float | None:
+    """Parse optional ``sample.t_eps`` (``None`` → train fallback).
+
+    Parameters
+    ----------
+    raw : Any
+        YAML value or ``None``.
+
+    Returns
+    -------
+    float or None
+        Positive float when set; ``None`` when absent.
+    """
+    if raw is None:
+        return None
+    return float(raw)

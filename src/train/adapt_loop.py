@@ -169,28 +169,17 @@ def dsm_settings_from_adapt(config: AdaptM7Config) -> DSMLossSettings:
     DSMLossSettings
         Validated DSM hyperparameters.
 
-    Raises
-    ------
-    NotImplementedError
-        When ``train.parameterization`` is not legacy ``score``.
     """
-    parameterization = str(config.train.protocol.parameterization)
-    # shortcut: Fill / session_impute still skip as_score_model; refuse
-    # until WP-B4 wraps the shared imputer factory.
-    if parameterization != "score":
-        raise NotImplementedError(
-            "adapt parameterization != 'score' not wired yet "
-            f"(got {parameterization!r}); wait for WP-B4"
-        )
+    protocol = config.train.protocol
     settings = DSMLossSettings(
         mask_rate=float(config.caps.smoke_mcar_rate),
         block_len=int(config.geometry.block_len),
-        t_eps=float(config.train.protocol.t_eps),
-        obs_loss_weight=float(config.train.protocol.obs_loss_weight),
-        mask_mode=str(config.train.protocol.mask_mode),
+        t_eps=float(protocol.t_eps),
+        obs_loss_weight=float(protocol.obs_loss_weight),
+        mask_mode=str(protocol.mask_mode),
         extras=DsmLossExtras(
-            observed_input=str(config.train.protocol.observed_input),
-            parameterization=parameterization,
+            observed_input=str(protocol.observed_input),
+            parameterization=str(protocol.parameterization),
         ),
     )
     settings.validate()

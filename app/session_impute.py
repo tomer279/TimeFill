@@ -14,6 +14,8 @@ ImputeRunMeta
     Effective ``K`` / solver steps for the run.
 SessionImputeResult
     Nested original-unit impute outputs for export / charts.
+SessionSolveFlags
+    Parameterization / observed_mode / diffusion_impl for Fill.
 SessionAssetRequest
     In-memory session model / scaler / SDE knobs for M7 adapt impute.
 SessionImputer
@@ -29,7 +31,7 @@ impute_bundled_sample
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -51,6 +53,7 @@ from src.data.schema import (
     apply_missing_sentinel,
 )
 from src.eval.m2_val_impute import OriginalScaleRestorer
+from src.models.score_from_eps import as_score_model
 from src.models.score_net import (
     ConditionalScoreNet,
     default_score_net_config,
@@ -70,6 +73,10 @@ _MODE_NONE = "none"
 _MODE_RANDOM = "random"
 _MODE_BLOCK = "block"
 _ALLOWED_MASK_MODES = frozenset({_MODE_NONE, _MODE_RANDOM, _MODE_BLOCK})
+_ALLOWED_PARAMETERIZATIONS = frozenset({"score", "eps"})
+_DEFAULT_PARAMETERIZATION = "score"
+_DEFAULT_OBSERVED_MODE = "frozen_clean"
+_DEFAULT_DIFFUSION_IMPL = "dense"
 _TEMPLATE_SEED = 0
 _DEFAULT_QUANTILE_LOW = 0.1
 _DEFAULT_QUANTILE_HIGH = 0.9
@@ -514,13 +521,69 @@ class _PreparedObservations:
 
 
 @dataclass(frozen=True)
+class SessionSolveFlags:
+    """M7.5 reverse-SDE solve flags for session Fill.
+
+    Public methods
+    --------------
+    validate
+        Check parameterization / observed_mode / diffusion_impl.
+    to_dict
+        Serialize fields for parity asserts.
+
+    Instance variables
+    ------------------
+    parameterization : str
+        ``score`` (legacy) or ``eps``.
+    observed_mode : str
+        ``frozen_clean`` (legacy) or ``replace_noised``.
+    diffusion_impl : str
+        ``dense`` (legacy) or ``diagonal``.
+    """
+
+    parameterization: str = _DEFAULT_PARAMETERIZATION
+    observed_mode: str = _DEFAULT_OBSERVED_MODE
+    diffusion_impl: str = _DEFAULT_DIFFUSION_IMPL
+
+    def validate(self) -> None:
+        """Raise ``ValueError`` if solve flags are invalid."""
+        if self.parameterization not in _ALLOWED_PARAMETERIZATIONS:
+            raise ValueError(
+                "parameterization must be one of "
+                f"{sorted(_ALLOWED_PARAMETERIZATIONS)}, "
+                f"got {self.parameterization!r}"
+            )
+        # Reuse ImputeSolverSettings validation for mode / diffusion.
+        ImputeSolverSettings(
+            solver_steps=1,
+            t_eps=1.0e-3,
+            observed_mode=self.observed_mode,
+            diffusion_impl=self.diffusion_impl,
+        ).validate()
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a JSON-serializable dict of solve flags.
+
+        Returns
+        -------
+        dict of str to str
+            Flag name to value.
+        """
+        return {
+            "parameterization": self.parameterization,
+            "observed_mode": self.observed_mode,
+            "diffusion_impl": self.diffusion_impl,
+        }
+
+
+@dataclass(frozen=True)
 class SessionAssetRequest:
     """In-memory session assets for reverse-SDE impute (M7).
 
     Public methods
     --------------
     validate
-        Check ``t_eps``, sample knobs, and scaler ``F``.
+        Check ``t_eps``, sample knobs, solve flags, and scaler ``F``.
     n_features
         Scaler feature count.
 
@@ -533,9 +596,11 @@ class SessionAssetRequest:
     sde_cfg : SdeConfig
         VP-SDE schedule used during adapt.
     t_eps : float
-        Terminal diffusion time.
+        Terminal diffusion time (already resolved).
     sample : AppM4SampleKnobs
         Effective ``K`` / steps / seeds.
+    solve : SessionSolveFlags
+        Parameterization / observed_mode / diffusion_impl.
     """
 
     model: ConditionalScoreNet
@@ -543,12 +608,14 @@ class SessionAssetRequest:
     sde_cfg: SdeConfig
     t_eps: float
     sample: AppM4SampleKnobs
+    solve: SessionSolveFlags = SessionSolveFlags()
 
     def validate(self) -> None:
         """Raise ``ValueError`` if assets are inconsistent."""
         if self.t_eps <= 0.0:
             raise ValueError(f"t_eps must be positive, got {self.t_eps}")
         self.sample.validate()
+        self.solve.validate()
         if self.scaler.n_features() <= 0:
             raise ValueError("scaler must have positive n_features")
 
@@ -580,6 +647,7 @@ class _LoadedBundle:
     t_eps: float
     sde_cfg: SdeConfig
     sample: AppM4SampleKnobs
+    solve: SessionSolveFlags = SessionSolveFlags()
     config: AppM4Config | None = None
 
     def n_features(self) -> int:
@@ -651,6 +719,7 @@ class SessionImputer:
         self.t_eps = bundle.t_eps
         self.sde_cfg: SdeConfig = bundle.sde_cfg
         self.sample = bundle.sample
+        self.solve = bundle.solve
 
     @classmethod
     def from_app_config(cls, path: Path | str) -> SessionImputer:
@@ -692,6 +761,8 @@ class SessionImputer:
             ConditionalScoreNet,
             load_checkpoint(config.paths.checkpoint, template),
         )
+        # shortcut: Exact pretrained keeps legacy solve flags; wire
+        # real_cfg.sample.* when app_m4 grows those keys.
         bundle = _LoadedBundle(
             model=model,
             scaler=scaler,
@@ -709,7 +780,7 @@ class SessionImputer:
         Parameters
         ----------
         request : SessionAssetRequest
-            Model, scaler, SDE, ``t_eps``, and sample knobs.
+            Model, scaler, SDE, ``t_eps``, sample knobs, and solve flags.
 
         Returns
         -------
@@ -723,6 +794,7 @@ class SessionImputer:
             t_eps=float(request.t_eps),
             sde_cfg=request.sde_cfg,
             sample=request.sample,
+            solve=request.solve,
             config=None,
         )
         return cls(bundle)
@@ -857,10 +929,19 @@ class SessionImputer:
         samples, mean, quantiles : jax.Array
             Normalized impute tensors.
         """
-        settings = plan.build_settings(self.t_eps)
+        settings = replace(
+            plan.build_settings(self.t_eps),
+            observed_mode=str(self.solve.observed_mode),
+            diffusion_impl=str(self.solve.diffusion_impl),
+        )
+        sde = VPSDE(self.sde_cfg)
         context = ImputeContext(
-            model=self.model,
-            sde=VPSDE(self.sde_cfg),
+            model=as_score_model(
+                self.model,
+                sde,
+                self.solve.parameterization,
+            ),
+            sde=sde,
             settings=settings,
         )
         context.validate()

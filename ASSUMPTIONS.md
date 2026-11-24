@@ -989,7 +989,7 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 ### WP6 sampler
 
 - `diffusion_impl=diagonal` is matvec-equivalent to dense `jnp.diag`; legacy default remains `dense`. EM `scan` fallback omitted; `lineax` is required with Diffrax ≥ 0.5.
-- Wired into `context_from_*_config`, train val snapshots (`M2ValHookBundle`), and the M3 bench runner (`ImputeContextRequest` / bench `sample.diffusion_impl`). App `session_impute` still defaults to dense until WP-B4's shared factory.
+- Wired into `context_from_*_config`, train val snapshots (`M2ValHookBundle`), and the M3 bench runner (`ImputeContextRequest` / bench `sample.diffusion_impl`). Adapt CLI/Streamlit Fill uses WP-B4's shared factory (honours config flags; `adapt_m7.yaml` stays legacy). Exact pretrained `SessionImputer.from_app_config` still defaults to dense/`score`/`train.t_eps` until `app_m4` grows those keys.
 - Each bare `impute()` rebuilds Diffrax closures (recompile). WP4 reuses one jitted runner (model arg) across val epochs; `scripts/wp6_timing.py` uses the same idea for timing.
 - `masked_mae(..., point_estimate="median")` uses the sample median; RMSE / CRPS / coverage stay on mean / samples. `SampleConfig.point_estimate` → evaluator / bench MAE wire is deferred to WP7 (config key alone does not change bench MAE yet).
 - `write_mean_median_csvs` dumps raw arrays to `mean.csv` / `median.csv` (not the app export format). Reproducible via `scripts/wp6_timing.py` → `artifacts/m7_5/wp6/`. Never write into frozen `m2|m3|m7` or default `artifacts/m1`.
@@ -1015,6 +1015,10 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 - Helper `load_checkpoint_with_config` exists; M3/adapt loaders still use plain
   `load_checkpoint` until WP3. Missing sidecar falls back to legacy
   `default_score_net_config`.
+- **WP-B4 deferral:** M7 adapt promote still skips `model_config.json`;
+  `adapt_meta.json` records `parameterization`, resolved `sample_t_eps`,
+  `observed_mode`, and `diffusion_impl` instead (sidecar remains a WP8/B5
+  candidate so reloaders can match train loaders).
 
 ## Out of scope for WP0
 

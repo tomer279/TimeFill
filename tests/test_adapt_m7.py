@@ -403,6 +403,10 @@ def test_adapt_scratch_writes_session_artifacts(tmp_path: Path) -> None:
     assert "scratch" in text
     assert "success" in text
     assert int(result.meta["F"]) == _FEAT
+    assert result.meta["parameterization"] == "score"
+    assert result.meta["observed_mode"] == "frozen_clean"
+    assert result.meta["diffusion_impl"] == "dense"
+    assert result.meta["sample_t_eps"] == pytest.approx(1.0e-5)
     assert result.model is not None
     assert "artifacts/m2" not in str(result.run_dir).replace("\\", "/")
 

@@ -10,8 +10,8 @@ test_context_from_toy_wraps_eps_and_resolves_sample_t_eps
     ``parameterization=eps`` wraps the model; ``sample.t_eps`` wins.
 test_eps_wrapped_impute_smoke_finite_and_freezes_observed
     Done-when: wrapped eps model through Diffrax; observed cells unchanged.
-test_adapt_refuses_non_score_parameterization
-    Adapt settings factory blocks ``eps`` until WP-B4 wraps Fill.
+test_adapt_accepts_eps_parameterization
+    Adapt DSM settings accept ``parameterization=eps`` (WP-B4).
 test_eps_train_loss_cv_lower_than_score
     Short toy train: last-100-step loss CV is lower for ``eps`` than ``score``.
 """
@@ -374,12 +374,12 @@ def test_eps_wrapped_impute_smoke_finite_and_freezes_observed() -> None:
     assert bool(jnp.allclose(mean[observed], x_obs[observed], atol=1e-5))
 
 
-def test_adapt_refuses_non_score_parameterization() -> None:
-    """Adapt factory refuses ``parameterization=eps`` until WP-B4."""
+def test_adapt_accepts_eps_parameterization() -> None:
+    """Adapt DSM settings accept ``parameterization=eps`` (WP-B4)."""
     config = load_adapt_m7_config(ADAPT_CONFIG_PATH)
     config.train.protocol.extras.loss.parameterization = "eps"
-    with pytest.raises(NotImplementedError, match="parameterization"):
-        dsm_settings_from_adapt(config)
+    settings = dsm_settings_from_adapt(config)
+    assert settings.parameterization == "eps"
 
 
 def test_eps_train_loss_cv_lower_than_score(tmp_path: Path) -> None:

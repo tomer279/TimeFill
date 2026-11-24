@@ -55,9 +55,14 @@ import numpy as np
 from app.m4_config import AppM4SampleKnobs
 from app.preview_ingest import FlexiblePreviewKnobs, try_adapt_flexible_windows
 from app.schema_validate import ValidatedFrame
-from app.session_impute import SessionAssetRequest, SessionImputer
+from app.session_impute import (
+    SessionAssetRequest,
+    SessionImputer,
+    SessionSolveFlags,
+)
 from app.window_adapter import AdaptedWindows
 from src.data.adapt_config import AdaptM7Config
+from src.sample.reverse_sde import resolve_sample_t_eps, warn_observed_pairing
 from src.train.adapt_m7 import (
     AdaptInitPolicy,
     AdaptSessionRequest,
@@ -586,12 +591,15 @@ def imputer_from_adapt_result(
 ) -> SessionImputer:
     """Build a session imputer from a promoted adapt result.
 
+    Shared CLI / Streamlit factory (WP-B4): reads M7.5 solve flags from
+    ``config`` so both paths stay in lockstep.
+
     Parameters
     ----------
     session : AdaptSessionResult
         Successful adapt outputs.
     config : AdaptM7Config
-        SDE / ``t_eps`` / sample knobs.
+        SDE / ``t_eps`` / sample knobs / solve flags.
 
     Returns
     -------
@@ -604,13 +612,26 @@ def imputer_from_adapt_result(
         seed_mask=int(config.sample.seed_mask),
         seed_sample=int(config.sample.seed_sample),
     )
+    protocol = config.train.protocol
+    warn_observed_pairing(
+        str(protocol.observed_input),
+        str(config.sample.observed_mode),
+    )
     return SessionImputer.from_session_assets(
         SessionAssetRequest(
             model=session.model,
             scaler=session.scaler,
             sde_cfg=config.sde,
-            t_eps=float(config.train.protocol.t_eps),
+            t_eps=resolve_sample_t_eps(
+                config.sample.t_eps,
+                float(protocol.t_eps),
+            ),
             sample=sample,
+            solve=SessionSolveFlags(
+                parameterization=str(protocol.parameterization),
+                observed_mode=str(config.sample.observed_mode),
+                diffusion_impl=str(config.sample.diffusion_impl),
+            ),
         )
     )
 

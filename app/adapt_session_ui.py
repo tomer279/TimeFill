@@ -41,6 +41,8 @@ imputer_from_adapt_result
     Bind ``SessionImputer`` to promoted session assets.
 format_adapt_failure
     Map ``ValueError`` / ``RuntimeError`` to user copy.
+smoke_only_warning_text
+    Streamlit honesty copy when ``adapt_meta.status`` is ``smoke_only``.
 """
 
 from __future__ import annotations
@@ -317,6 +319,31 @@ class AdaptFailureInfo:
         return f"**{title}**\n\n{self.message}"
 
 
+_STATUS_SMOKE_ONLY = "smoke_only"
+
+
+def smoke_only_warning_text(status: str) -> str:
+    """Return Streamlit warning copy for under-budget adapt runs.
+
+    Parameters
+    ----------
+    status : str
+        ``adapt_meta.json`` ``status`` value.
+
+    Returns
+    -------
+    str
+        Non-empty warning when ``status`` is ``smoke_only``; else ``""``.
+    """
+    if status != _STATUS_SMOKE_ONLY:
+        return ""
+    return (
+        "This adapt ran fewer than min_adapt_steps gradient steps; "
+        "imputations are not quality results "
+        "(demo / smoke only, not a claim)."
+    )
+
+
 @dataclass(frozen=True)
 class BoundAdaptSession:
     """Successful adapt bound to one upload fingerprint.
@@ -342,6 +369,8 @@ class BoundAdaptSession:
         ``artifacts/m7/<run_id>/`` (or override root).
     feature_names : tuple of str
         Session schema names (gate unlock key).
+    adapt_status : str
+        ``adapt_meta`` status (``success`` or ``smoke_only``).
     """
 
     fingerprint: str
@@ -350,6 +379,7 @@ class BoundAdaptSession:
     run_id: str
     run_dir: Path
     feature_names: tuple[str, ...]
+    adapt_status: str = "success"
 
     def matches(self, fingerprint: str) -> bool:
         """Return whether this bind still applies.
@@ -801,5 +831,6 @@ def _run_ui_adapt_checked(request: AdaptRunRequest) -> AdaptUiOutcome:
         run_id=result.run_id,
         run_dir=result.run_dir,
         feature_names=tuple(request.windows.feature_names),
+        adapt_status=str(result.meta.get("status", "success")),
     )
     return AdaptUiOutcome(session=bound, failure=None)

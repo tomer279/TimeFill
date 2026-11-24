@@ -62,6 +62,7 @@ from src.data.adapt_config import (
     AdaptModeSection,
     AdaptSampleSection,
     AdaptWindowCliOverrides,
+    adapt_budget_status,
     allowed_adapt_modes,
     apply_adapt_cli_overrides,
     default_adapt_mode,
@@ -94,7 +95,6 @@ _MASK_TOL = 1e-6
 _BEST_CKPT_NAME = "best_score_net.eqx"
 _SCALER_NAME = "feature_scaler.npz"
 _META_NAME = "adapt_meta.json"
-_STATUS_SUCCESS = "success"
 _RUN_ID_SUFFIX_LEN = 6
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _M2_ARTIFACT_MARKER = "artifacts/m2"
@@ -773,8 +773,16 @@ def _build_success_meta(
         Metadata written beside the session checkpoint.
     """
     values = request.windows.values
+    epochs = int(request.config.train.schedule.epochs)
+    steps_per_epoch = int(request.config.train.schedule.steps_per_epoch)
+    min_adapt_steps = request.config.caps.min_adapt_steps
+    total_adapt_steps = epochs * steps_per_epoch
     return {
-        "status": _STATUS_SUCCESS,
+        "status": adapt_budget_status(
+            epochs,
+            steps_per_epoch,
+            min_adapt_steps,
+        ),
         "run_id": run_id,
         "mode": policy.resolved_mode(),
         "feature_names": list(request.windows.feature_names),
@@ -785,8 +793,10 @@ def _build_success_meta(
         "n_smoke_windows": split.n_smoke(),
         "train_fraction": float(request.config.caps.train_fraction),
         "seed": int(request.config.train.protocol.seed),
-        "epochs": int(request.config.train.schedule.epochs),
-        "steps_per_epoch": int(request.config.train.schedule.steps_per_epoch),
+        "epochs": epochs,
+        "steps_per_epoch": steps_per_epoch,
+        "total_adapt_steps": total_adapt_steps,
+        "min_adapt_steps": min_adapt_steps,
         "batch_size": int(request.config.geometry.batch_size),
         "timeout_seconds": float(request.config.caps.timeout_seconds),
         "observed_input": str(request.config.train.protocol.observed_input),

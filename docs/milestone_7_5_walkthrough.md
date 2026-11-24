@@ -1,5 +1,27 @@
 # Milestone 7.5 walkthrough
 
+## WP8 — Adapt honesty + M7.5 flag opt-in
+
+- `adapt.min_adapt_steps` (dataclass default `null`); product
+  `configs/adapt_m7.yaml` sets `200` so `5×20=100` → `adapt_meta.status:
+  smoke_only` (still promotes). Streamlit warns once in `_show_bound_adapt_info`;
+  CLI `_print_success` prints `status=` + the same warning.
+- Opt-in: `configs/adapt_m7_5.yaml` (eps/clean/diagonal/strict empty-feature;
+  same under-budget smoke_only unless you raise epochs/steps).
+- Abort tests require no `adapt_meta.json` (not merely `status != success`).
+- Deferred: window stitching, impute/bench frozen-root refuse, adapt sidecar /
+  `tcn_v2`; status ignores best-val epoch (configured budget only).
+- `src/data/Untitled-1.py` already absent (no-op).
+- Pre-WP8 session dirs (e.g. `artifacts/m7/20261018T124132Z_775488/`) may
+  still say `status: success` for a 1×1 run — leave them; they predate WP8.
+
+```text
+pytest tests/test_wp8_adapt_honesty.py tests/test_adapt_m7.py tests/test_wp_b4_adapt_guarantees.py -q
+# → 25 passed
+pytest -q
+# → 255 passed in ~146s
+```
+
 ## WP5 — Feature transform and per-feature evaluation
 
 - `FeatureScaler`: optional `log1p_features`, `clip_nonnegative`, empty-feature

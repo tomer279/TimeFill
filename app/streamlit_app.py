@@ -41,6 +41,7 @@ from app.adapt_session_ui import (
     prepare_adapt_windows,
     reset_session_binding,
     run_ui_adapt,
+    smoke_only_warning_text,
 )
 from app.demo_eval_smoke import DemoEvalSmokeRequest, run_demo_eval_smoke
 from app.export_frames import (
@@ -778,6 +779,9 @@ def _show_bound_adapt_info(bound: BoundAdaptSession | None) -> None:
     """
     if bound is not None:
         st.info(bound.describe())
+        warning = smoke_only_warning_text(bound.adapt_status)
+        if warning:
+            st.warning(warning)
 
 
 def _render_adapt_panel(

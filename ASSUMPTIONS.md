@@ -937,6 +937,15 @@ defaults**; new behavior is opted into via `configs/real_m7_5.yaml` /
 | `data.transform.clip_nonnegative` | `false` | `true` | Clip restored originals at 0 (WP5) |
 | `data.allow_empty_feature_fallback` | `true` | `false` | No silent identity scaler |
 | `adapt.allow_empty_feature_fallback` | `true` | opt-in `false` | Same empty-feature policy on adapt train slice |
+| `adapt.min_adapt_steps` | code default `null` (off); **shipped** `adapt_m7.yaml` sets `200` | `200` (`adapt_m7_5.yaml`) | Under-budget → `adapt_meta.status: smoke_only` + UI/CLI warning; still promotes (WP8). Deliberate exception to “legacy YAML byte-identical behavior”: label only, weights/schedule unchanged. |
+
+Opt-in adapt flags: use `configs/adapt_m7_5.yaml` (`parameterization: eps`,
+`observed_input: clean`, `sample.t_eps` / `diffusion_impl: diagonal`,
+`allow_empty_feature_fallback: false`). Scratch-only for `eps`; fine-tune
+stays `score`. Pre-WP8 `artifacts/m7/.../adapt_meta.json` may still say
+`success` for short runs — leave those claim/session folders untouched.
+Stitching / adapt `tcn_v2` deferred. Status uses configured
+`epochs × steps_per_epoch`, not the best-val epoch’s step count.
 
 ### WP5 feature transform and metrics
 

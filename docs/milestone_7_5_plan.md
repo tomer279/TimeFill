@@ -420,6 +420,17 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   if time is short.
 - **Tests:** smoke-only flag logic; adapt run with the M7.5 flags on the
   toy fixture.
+- **Done (2026-11-24):** What changed: `min_adapt_steps` →
+  `adapt_meta.status: smoke_only` (still promotes) + Streamlit/CLI warning;
+  `adapt_m7.yaml` sets `200`; `configs/adapt_m7_5.yaml` opt-in
+  (eps/clean/diagonal); `Untitled-1.py` already gone. Deferred: stitching,
+  adapt `tcn_v2`/sidecar, impute/bench frozen-root refuse.
+  Decisions: status = configured `epochs×steps` (not best-val epoch);
+  shipped YAML `success→smoke_only` label is a deliberate ASSUMPTIONS
+  exception (weights/schedule unchanged).
+  Commands / numbers: `pytest tests/test_wp8_adapt_honesty.py
+  tests/test_adapt_m7.py tests/test_wp_b4_adapt_guarantees.py -q` →
+  **25 passed**; `pytest -q` → **255 passed** in ~146s.
 
 ---
 

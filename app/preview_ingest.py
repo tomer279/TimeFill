@@ -153,12 +153,15 @@ class PreviewBuildInputs:
         Adapted batch, or ``None`` when adapt rejected / skipped.
     adapt_error : str or None
         User-facing reject text when ``windows`` is ``None``.
+    column_notes : tuple of str
+        Flexible infer drop / exclude lines (merged into preview warnings).
     """
 
     frame: ValidatedFrame
     ingest_mode: str
     windows: AdaptedWindows | None
     adapt_error: str | None
+    column_notes: tuple[str, ...] = ()
 
     def has_windows(self) -> bool:
         """Return whether adapted windows are available.
@@ -516,7 +519,9 @@ def build_ingest_preview(inputs: PreviewBuildInputs) -> IngestPreviewSummary:
         adapt=PreviewAdaptInfo(
             n_windows=inputs.window_count(),
             adapt_message=adapt_message,
-            warnings=multi_row_hour_warnings(frame),
+            warnings=(
+                multi_row_hour_warnings(frame) + inputs.column_notes
+            ),
         ),
         entity_id=frame.entity_id,
         has_timestamps=frame.timestamps is not None,

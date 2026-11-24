@@ -568,8 +568,23 @@ training or report protocols, or the M4 exact-schema Streamlit happy path.
 ## Native missingness
 
 - Empty / NaN / documented NA tokens (`""`, `na`, `nan`, `null`, `none`,
-  case-insensitive) → **`m_native = 0`**, value sentinel **`0.0`**.
+  `n/a`, `-`, `--`, `?`, `missing`, case-insensitive / trimmed) →
+  **`m_native = 0`**, value sentinel **`0.0`** (shared Exact + Flexible
+  parse; see `MISSING_CELL_TOKENS`).
 - Same mask alphabet as M1–M5; missingness is never inferred from nonzero `x`.
+
+## Flexible column inference (M7.5 / WP-B5)
+
+- **Exclude from feature inference** (unless an explicit role map picks them):
+  `year`, `month`, `day`, `hour`, `minute`, `index`, `no`, `id`,
+  `unnamed: 0` (case-insensitive).
+- **Timestamp:** accept only when **every** cell is present (no empty / NA
+  tokens) and the column converts to `datetime64[s]` (same rules as the
+  upload parser). Digit-only / signed-integer cells and bare words
+  `today` / `now` are not timestamps. A name-hinted column that fails this
+  check is **not** used as a feature either; the preview lists the reason.
+- Drop / exclude reasons appear on the ingest preview (and on the
+  zero-feature error message when inference yields no features).
 
 ## Pad / truncate / window defaults
 
@@ -724,9 +739,9 @@ training or report protocols, or the Exact Beijing pretrained Streamlit path.
 - **Refuse fine-tune** when `F ≠` base `F`. Surface a clear message and offer
   scratch. Do not pad / truncate the feature axis to force a load.
 - **Fine-tune name policy (locked):** base `feature_names` must equal the
-  upload’s mapped `features[]` in order, **or** the user must explicitly
-  confirm same semantics. **Silent remap of unknown columns to `PM2.5`…`O3`
-  remains banned** (same as M6).
+  upload’s mapped `features[]` in order; otherwise refuse and use scratch.
+  There is no “confirm same semantics” override. **Silent remap of unknown
+  columns to `PM2.5`…`O3` remains banned** (same as M6).
 - Default product choice when both are legal: **scratch** unless the user
   opts into fine-tune.
 

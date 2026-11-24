@@ -39,7 +39,6 @@ dependencies = [
     "matplotlib>=3.8.0",
     "pandas>=2.0",
     "pyyaml>=6.0",
-    "pytest>=8.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +46,9 @@ dependencies = [
 app = [
     "streamlit>=1.28",
     "plotly>=5.18",
+]
+dev = [
+    "pytest>=8.0",
 ]
 # Optional CUDA install is platform-specific; see README (JAX docs).
 # Example (do not pin blindly): pip install -U "jax[cuda12]"

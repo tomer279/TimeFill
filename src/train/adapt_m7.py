@@ -243,16 +243,13 @@ class AdaptInitPolicy:
     base_feature_names : tuple of str
         Base schema names (default Beijing ``F = 6``).
     require_feature_name_match : bool
-        If true, names must match unless confirmed.
-    confirm_same_semantics : bool
-        User override when names differ but ``F`` matches.
+        If true, feature names must match the base schema.
     """
 
     mode: str = _MODE_SCRATCH
     base_checkpoint: Path | None = None
     base_feature_names: tuple[str, ...] = _DEFAULT_BASE_FEATURES
     require_feature_name_match: bool = True
-    confirm_same_semantics: bool = False
 
     def validate(self) -> None:
         """Raise ``ValueError`` if policy knobs are invalid."""
@@ -340,7 +337,6 @@ class AdaptSessionRequest:
             require_feature_name_match=(
                 self.config.mode.require_feature_name_match_for_fine_tune
             ),
-            confirm_same_semantics=self.policy.confirm_same_semantics,
         )
 
 
@@ -703,14 +699,10 @@ def _assert_fine_tune_allowed(
             "ConditionalScoreNet.n_features is static; use mode='scratch'."
         )
     names_match = tuple(windows.feature_names) == base_names
-    if (
-            policy.require_feature_name_match
-            and not names_match
-            and not policy.confirm_same_semantics
-    ):
+    if policy.require_feature_name_match and not names_match:
         raise ValueError(
             "Fine-tune refused: feature_names do not match the base "
-            "schema. Confirm same semantics or use mode='scratch'. "
+            "schema. Use mode='scratch'. "
             "Silent remap to Beijing names is banned."
         )
 

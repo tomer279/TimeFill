@@ -2,10 +2,8 @@
 
 Classes
 -------
-AdaptLoopCapsView
-    Train / sample smoke caps for UI captions.
 AdaptCapsDisplay
-    Nested smoke caps / timeout / ETA note for the adapt panel.
+    Flat smoke-cap caption strings for the adapt panel.
 AdaptRunRequest
     Windows + config + mode for one UI adapt invocation.
 AdaptFailureInfo
@@ -87,70 +85,8 @@ _SECONDS_PER_MINUTE = 60.0
 
 
 @dataclass(frozen=True)
-class AdaptLoopCapsView:
-    """Train / sample smoke caps for UI captions.
-
-    Public methods
-    --------------
-    as_lines
-        Short train/sample lines.
-    describe
-        One-line ``epochs×steps`` summary.
-
-    Instance variables
-    ------------------
-    epochs : int
-        Capped train epochs.
-    steps_per_epoch : int
-        Steps per epoch.
-    batch_size : int
-        DSM batch size.
-    k_samples : int
-        Post-adapt ``K``.
-    solver_steps : int
-        Reverse-SDE steps.
-    """
-
-    epochs: int
-    steps_per_epoch: int
-    batch_size: int
-    k_samples: int
-    solver_steps: int
-
-    def as_lines(self) -> tuple[str, ...]:
-        """Return train/sample cap lines.
-
-        Returns
-        -------
-        tuple of str
-            Human-readable lines.
-        """
-        return (
-            f"epochs={self.epochs}",
-            f"steps/epoch={self.steps_per_epoch}",
-            f"batch_size={self.batch_size}",
-            f"K={self.k_samples}",
-            f"solver_steps={self.solver_steps}",
-        )
-
-    def describe(self) -> str:
-        """Return a one-line train/sample summary.
-
-        Returns
-        -------
-        str
-            Compact cap string.
-        """
-        return (
-            f"epochs={self.epochs} steps/epoch={self.steps_per_epoch} "
-            f"batch={self.batch_size} K={self.k_samples} "
-            f"steps={self.solver_steps}"
-        )
-
-
-@dataclass(frozen=True)
 class AdaptCapsDisplay:
-    """Visible smoke caps for the adapt panel.
+    """Visible smoke caps for the adapt panel (plain caption strings).
 
     Public methods
     --------------
@@ -161,23 +97,14 @@ class AdaptCapsDisplay:
 
     Instance variables
     ------------------
-    loop : AdaptLoopCapsView
-        Epochs / steps / batch / ``K`` / solver steps.
-    timeout_seconds : float
-        Wall-clock abort budget.
-    min_windows : int
-        Minimum ``B`` before adapt starts.
-    seq_len : int
-        Effective window length ``T``.
-    mode : str
-        ``scratch`` or ``fine_tune``.
+    lines : tuple of str
+        Preformatted smoke-cap caption lines.
+    eta : str
+        Soft ETA / timeout note text.
     """
 
-    loop: AdaptLoopCapsView
-    timeout_seconds: float
-    min_windows: int
-    seq_len: int
-    mode: str
+    lines: tuple[str, ...]
+    eta: str
 
     def as_lines(self) -> tuple[str, ...]:
         """Return short cap lines for captions / expanders.
@@ -187,13 +114,7 @@ class AdaptCapsDisplay:
         tuple of str
             Human-readable cap summaries.
         """
-        return (
-            f"mode={self.mode}",
-            *self.loop.as_lines(),
-            f"seq_len={self.seq_len}",
-            f"timeout={self.timeout_seconds:.0f}s",
-            f"min_windows={self.min_windows}",
-        )
+        return self.lines
 
     def eta_note(self) -> str:
         """Return a soft ETA note anchored on the timeout budget.
@@ -203,12 +124,7 @@ class AdaptCapsDisplay:
         str
             User-facing timing expectation.
         """
-        minutes = self.timeout_seconds / _SECONDS_PER_MINUTE
-        return (
-            "Smoke-capped adapt on CPU often finishes in a few minutes; "
-            f"hard stop at {minutes:.0f} min (timeout). "
-            "This is not a full M2 train and not a universal SOTA claim."
-        )
+        return self.eta
 
 
 @dataclass(frozen=True)
@@ -570,19 +486,25 @@ def caps_display_from_config(
         Caption payload.
     """
     resolved = str(mode).strip().lower() or _MODE_SCRATCH
-    return AdaptCapsDisplay(
-        loop=AdaptLoopCapsView(
-            epochs=int(config.train.schedule.epochs),
-            steps_per_epoch=int(config.train.schedule.steps_per_epoch),
-            batch_size=int(config.geometry.batch_size),
-            k_samples=int(config.sample.k_samples),
-            solver_steps=int(config.sample.solver_steps),
-        ),
-        timeout_seconds=float(config.caps.timeout_seconds),
-        min_windows=int(config.caps.min_windows),
-        seq_len=int(config.geometry.seq_len),
-        mode=resolved,
+    timeout_seconds = float(config.caps.timeout_seconds)
+    minutes = timeout_seconds / _SECONDS_PER_MINUTE
+    lines = (
+        f"mode={resolved}",
+        f"epochs={int(config.train.schedule.epochs)}",
+        f"steps/epoch={int(config.train.schedule.steps_per_epoch)}",
+        f"batch_size={int(config.geometry.batch_size)}",
+        f"K={int(config.sample.k_samples)}",
+        f"solver_steps={int(config.sample.solver_steps)}",
+        f"seq_len={int(config.geometry.seq_len)}",
+        f"timeout={timeout_seconds:.0f}s",
+        f"min_windows={int(config.caps.min_windows)}",
     )
+    eta = (
+        "Smoke-capped adapt on CPU often finishes in a few minutes; "
+        f"hard stop at {minutes:.0f} min (timeout). "
+        "This is not a full M2 train and not a universal SOTA claim."
+    )
+    return AdaptCapsDisplay(lines=lines, eta=eta)
 
 
 def prepare_adapt_windows(

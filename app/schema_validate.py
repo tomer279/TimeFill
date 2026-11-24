@@ -19,6 +19,11 @@ validate_upload_rows
     Validate already-parsed string rows (hermetic tests).
 summarize_missingness
     Build a ``MissingnessSummary`` from a ``ValidatedFrame``.
+
+Constants
+---------
+MISSING_CELL_TOKENS
+    Documented NA / empty cell tokens (casefolded lookup).
 """
 
 from __future__ import annotations
@@ -36,7 +41,22 @@ from src.data.schema import (
     MISSING_VALUE_SENTINEL,
 )
 
-_MISSING_TOKENS = frozenset({"", "na", "nan", "null", "none"})
+# Shared with flexible infer (WP-B5). Lookup via str.strip().casefold().
+MISSING_CELL_TOKENS = frozenset(
+    {
+        "",
+        "na",
+        "nan",
+        "null",
+        "none",
+        "n/a",
+        "-",
+        "--",
+        "?",
+        "missing",
+    }
+)
+_MISSING_TOKENS = MISSING_CELL_TOKENS
 _TIME_AXIS = 0
 _FEATURE_AXIS = 1
 _PERCENT = 100.0
@@ -446,7 +466,7 @@ def _parse_numeric_cell(raw: str) -> tuple[float, float]:
         If the cell is non-empty and not a finite float / NA token.
     """
     text = str(raw).strip()
-    if text.lower() in _MISSING_TOKENS:
+    if text.casefold() in _MISSING_TOKENS:
         return float(MISSING_VALUE_SENTINEL), float(MASK_MISSING)
     try:
         number = float(text)

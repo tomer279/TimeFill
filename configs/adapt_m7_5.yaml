@@ -14,7 +14,6 @@ adapt:
   allow_fine_tune_when_f_matches: true
   require_feature_name_match_for_fine_tune: true
   base_checkpoint: artifacts/m2/checkpoints/best_score_net.eqx
-  base_scaler: artifacts/m2/checkpoints/feature_scaler.npz
   artifact_dir: artifacts/m7_5/adapt
   timeout_seconds: 600
   min_windows: 2

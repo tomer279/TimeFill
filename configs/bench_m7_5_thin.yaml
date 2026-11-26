@@ -1,0 +1,58 @@
+# WP7 Phase 3 thin bench: one seed pair on test (full K/steps/protocols).
+# Use after the 3×3 grid proved too slow; expand seeds once this finishes.
+#   python -u scripts/run_m3_benchmark.py --config configs/bench_m7_5_thin.yaml \
+#     --real-config configs/real_m7_5.yaml
+
+data:
+  processed_dir: data/processed/m2
+  checkpoint: artifacts/m7_5/train/checkpoints/best_score_net.eqx
+  scaler: artifacts/m7_5/train/checkpoints/feature_scaler.npz
+  split: test
+  n_features: 6
+  feature_names:
+    - PM2.5
+    - PM10
+    - SO2
+    - NO2
+    - CO
+    - O3
+  seq_len: 64
+
+protocols:
+  mcar_rates:
+    - 0.10
+    - 0.30
+    - 0.50
+  block:
+    enabled: true
+    block_len: 8
+    extra_lens: [16]
+
+sample:
+  K_samples: 50
+  solver_steps: 100
+  diffusion_impl: diagonal
+  point_estimate: median
+
+seeds:
+  mask: 0
+  sample: 1
+
+methods:
+  - timefill
+  - locf
+  - linear
+
+baselines:
+  edge_policy: train_feature_mean
+  point_metrics: degenerate_k1
+  point_k: 1
+
+artifact_dir: artifacts/m7_5/bench
+
+smoke:
+  # null: non-smoke runs must not pick up a window cap (loader reads this key).
+  max_windows: null
+  K_samples: 2
+  solver_steps: 10
+  split: val

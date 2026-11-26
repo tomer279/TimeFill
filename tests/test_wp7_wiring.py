@@ -10,8 +10,8 @@ test_bench_loader_scalar_seeds_still_parse
     Legacy scalar ``seeds.mask`` / ``seeds.sample`` still resolve.
 test_bench_loader_expands_mask_sample_seed_lists
     List seeds expand to the Cartesian product of pairs.
-test_require_single_seed_run_refuses_seed_lists
-    CLI guard refuses multi-pair plans until the seed-grid loop lands.
+test_aggregate_seed_metric_rows_mean_std
+    Seed-grid summary reports mean ± std over pairs.
 test_bench_loader_reads_point_estimate
     Bench YAML ``sample.point_estimate`` lands on the plan.
 test_imputation_evaluator_honors_point_estimate
@@ -137,20 +137,43 @@ def test_bench_loader_expands_mask_sample_seed_lists() -> None:
     assert pairs[-1] == SeedPair(mask=2, sample=3)
 
 
-def test_require_single_seed_run_refuses_seed_lists() -> None:
-    """Multi-pair plans are refused so CLI cannot silently use pair[0]."""
-    bench = _bench_module()
-    plan = bench.BenchM3ConfigLoader(REPO_ROOT).resolve(
-        _minimal_bench_raw(seeds={"mask": [0, 1], "sample": [1, 2]}),
-        False,
+def test_aggregate_seed_metric_rows_mean_std() -> None:
+    """Summary rows average MAE over seed pairs and expose std."""
+    from src.eval.m3_table import (
+        MetricRecord,
+        ProtocolKey,
+        RunMeta,
+        ScoreBlock,
+        aggregate_seed_metric_rows,
     )
-    with pytest.raises(NotImplementedError, match="seed-grid"):
-        bench.require_single_seed_run(plan)
-    scalar = bench.BenchM3ConfigLoader(REPO_ROOT).resolve(
-        _minimal_bench_raw(seeds={"mask": 0, "sample": 1}),
-        False,
-    )
-    bench.require_single_seed_run(scalar)
+
+    protocol = ProtocolKey(name="mcar", mask_rate=0.3, block_len=None)
+    rows = [
+        MetricRecord(
+            method="timefill",
+            protocol=protocol,
+            scores=ScoreBlock(
+                mae=float(mae),
+                rmse=1.0,
+                crps=1.0,
+                coverage_50=0.5,
+                coverage_90=0.9,
+            ),
+            meta=RunMeta(
+                seeds=SeedPair(mask=mask, sample=1),
+                split="test",
+                k_samples=2,
+                point_metrics="ensemble",
+            ),
+            n_target_cells=10,
+        )
+        for mask, mae in ((0, 2.0), (1, 4.0), (2, 6.0))
+    ]
+    summary = aggregate_seed_metric_rows(rows)
+    assert len(summary) == 1
+    assert summary[0]["n_seeds"] == 3
+    assert summary[0]["mae_mean"] == pytest.approx(4.0)
+    assert summary[0]["mae_std"] == pytest.approx(2.0)
 
 
 def test_bench_loader_reads_point_estimate() -> None:

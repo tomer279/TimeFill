@@ -153,7 +153,7 @@ def test_bench_m7_5_yaml_points_at_m7_5_artifacts_and_seed_lists() -> None:
     ) or raw["data"]["checkpoint"] == (
         "artifacts/m7_5/train/checkpoints/best_score_net.eqx"
     )
-    assert raw["artifact_dir"] == "artifacts/m7_5/bench"
+    assert raw["artifact_dir"] == "artifacts/m7_5/bench_grid"
     assert raw["seeds"]["mask"] == [0, 1, 2]
     assert raw["seeds"]["sample"] == [1, 2, 3]
 

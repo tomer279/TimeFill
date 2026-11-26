@@ -27,7 +27,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -380,6 +382,41 @@ class M3BenchmarkRunner:
         self._helpers = _ScoreAndPlotHelpers(
             point_estimate=str(grid.point_estimate),
         )
+        # One jitted impute path for all protocols (avoids Diffrax recompile).
+        self._impute_run = _make_bench_impute_runner(
+            context,
+            seq_len=int(data.windows.values_n.shape[TIME_AXIS]),
+            k_samples=int(grid.k_samples),
+        )
+
+    def collect(
+            self,
+    ) -> tuple[
+        list[MetricRecord],
+        list[dict[str, float | int | str]],
+        ComparisonView | None,
+    ]:
+        """Run protocols × methods without writing artifacts.
+
+        Returns
+        -------
+        rows : list of MetricRecord
+            Long-form pooled metric rows.
+        per_feature_rows : list of dict
+            Per-feature metric rows.
+        panel_view : ComparisonView or None
+            First protocol comparison view (for a single PNG).
+        """
+        rows_out: list[MetricRecord] = []
+        per_feature_rows: list[dict[str, float | int | str]] = []
+        panel_view: ComparisonView | None = None
+        for protocol in self.grid.protocols:
+            rows, view, feature_rows = self._run_protocol(protocol)
+            rows_out.extend(rows)
+            per_feature_rows.extend(feature_rows)
+            if panel_view is None and view is not None:
+                panel_view = view
+        return rows_out, per_feature_rows, panel_view
 
     def run(self) -> list[MetricRecord]:
         """Run all protocols × methods and write artifacts.
@@ -390,20 +427,15 @@ class M3BenchmarkRunner:
             Long-form table rows.
         """
         self.paths.ensure()
+        rows, per_feature_rows, panel_view = self.collect()
         assembler = MetricsTableAssembler()
-        per_feature_rows: list[dict[str, float | int | str]] = []
-        panel_written = False
-        for protocol in self.grid.protocols:
-            rows, view, feature_rows = self._run_protocol(protocol)
-            for row in rows:
-                assembler.append(row)
-            per_feature_rows.extend(feature_rows)
-            if not panel_written and view is not None:
-                self._helpers.save_panel(view, self.paths.comparison_panel())
-                panel_written = True
+        for row in rows:
+            assembler.append(row)
         assembler.write_csv(self.paths.metrics_csv())
         assembler.write_json(self.paths.metrics_json())
         write_per_feature_csv(self.paths.per_feature_csv(), per_feature_rows)
+        if panel_view is not None:
+            self._helpers.save_panel(panel_view, self.paths.comparison_panel())
         return assembler.rows()
 
     def score_method(self, score_input: MethodScoreInput) -> MetricsTable:
@@ -485,16 +517,10 @@ class M3BenchmarkRunner:
 
     def _timefill(self, masks: ProtocolMaskBundle) -> TimeFillResult:
         """Impute in normalized space and restore to original units."""
-        seq_len = int(masks.x_obs_n.shape[TIME_AXIS])
-        imputer = ReverseSDEImputer(self.context)
-        samples_n, mean_n, quantiles_n = imputer.impute(
-            ImputeQuery(
-                observations=masks.x_obs_n,
-                mask=masks.m_eval,
-                timestamps=grid_timestamps(seq_len),
-                key=jax.random.PRNGKey(self.grid.seeds.sample),
-                k_samples=self.grid.k_samples,
-            )
+        samples_n, mean_n, quantiles_n = self._impute_run(
+            masks.x_obs_n,
+            masks.m_eval,
+            jax.random.PRNGKey(self.grid.seeds.sample),
         )
         restorer = OriginalScaleRestorer(self.data.scaler)
         m_native = masks.m_native
@@ -603,6 +629,8 @@ class M3BenchmarkRunner:
                         "coverage_50": float(per_c50[feat_idx]),
                         "coverage_90": float(per_c90[feat_idx]),
                         "n_target_cells": int(counts[feat_idx]),
+                        "mask_seed": int(self.grid.seeds.mask),
+                        "sample_seed": int(self.grid.seeds.sample),
                     }
                 )
         return rows
@@ -635,6 +663,49 @@ class M3BenchmarkRunner:
             n_target_cells=n_targets,
             scores_norm=ScoreBlock.from_table(table_norm),
         )
+
+
+def _make_bench_impute_runner(
+        context: ImputeContext,
+        seq_len: int,
+        k_samples: int,
+) -> Callable:
+    """Build one ``filter_jit`` impute path reused across protocols.
+
+    Parameters
+    ----------
+    context : ImputeContext
+        Fixed score model / SDE / solver settings.
+    seq_len : int
+        Window length ``T``.
+    k_samples : int
+        Posterior sample count ``K``.
+
+    Returns
+    -------
+    callable
+        ``(observations, mask, key) -> (samples, mean, quantiles)``.
+    """
+    timestamps = grid_timestamps(seq_len)
+
+    @eqx.filter_jit
+    def run(
+            observations: jnp.ndarray,
+            mask: jnp.ndarray,
+            key: jax.Array,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        imputer = ReverseSDEImputer(context)
+        return imputer.impute(
+            ImputeQuery(
+                observations=observations,
+                mask=mask,
+                timestamps=timestamps,
+                key=key,
+                k_samples=k_samples,
+            )
+        )
+
+    return run
 
 
 __all__ = [

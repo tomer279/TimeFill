@@ -44,6 +44,7 @@ plt.switch_backend("Agg")
 
 _METRICS_CSV = "metrics_by_rate.csv"
 _METRICS_JSON = "metrics_by_rate.json"
+_METRICS_SUMMARY_CSV = "metrics_summary.csv"
 _PER_FEATURE_CSV = "per_feature.csv"
 _PANELS_DIR = "panels"
 _PANEL_NAME = "comparison_timefill_locf_linear.png"
@@ -274,6 +275,8 @@ class M3ArtifactPaths:
         Path for ``metrics_by_rate.json``.
     per_feature_csv
         Path for ``per_feature.csv``.
+    metrics_summary_csv
+        Path for seed-averaged ``metrics_summary.csv``.
     comparison_panel
         Path for the primary comparison PNG.
 
@@ -309,6 +312,10 @@ class M3ArtifactPaths:
     def per_feature_csv(self) -> Path:
         """Return ``root / per_feature.csv``."""
         return self.root / _PER_FEATURE_CSV
+
+    def metrics_summary_csv(self) -> Path:
+        """Return ``root / metrics_summary.csv``."""
+        return self.root / _METRICS_SUMMARY_CSV
 
     def comparison_panel(self) -> Path:
         """Return ``root / panels / comparison_....png``."""

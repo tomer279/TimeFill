@@ -7,10 +7,50 @@
 - Bench loader: seed lists → `seed_pairs` (3×3), `point_estimate` → MAE,
   sidecar load + `ScoreFromEps` / `sample.t_eps` / `observed_mode`,
   `block.extra_lens` for block-16 extension.
-- Decision: `main()` still runs the first seed pair only; Cartesian loop is
-  Phase 3. `replace_noised` train still refused.
+- Decision: `replace_noised` train still refused.
 - Commands:
   `pytest tests/test_wp7_wiring.py tests/test_wp4_train_hygiene.py::test_assert_wp0_allows_real_m7_5 -q`
+
+## WP7 Phase 2–3 — Full train + seed-grid bench
+
+- Phase 2: `real_m7_5.yaml` → `artifacts/m7_5/train/` (~96 min).
+  `train_meta`: selected_epoch=180, clipped_step_fraction=0.0,
+  median_grad_norm≈0.23, params=172550, RF=129.
+- Phase 3: `main()` loops `seed_pairs`; raw `metrics_by_rate.*` +
+  `metrics_summary.csv` (mean±std when n_seeds≥2; thin has n_seeds=1 so
+  std cells are 0.0 = not measured); panel prefers mask=0,sample=1.
+  Bench runner caches one `filter_jit` impute path (stops Diffrax
+  recompile-per-protocol). Full 3×3 aborted after ~21h; thin rerun is
+  `configs/bench_m7_5_thin.yaml` (mask=0, sample=1 only).
+- Commands:
+  `python -u scripts/run_m3_benchmark.py --config configs/bench_m7_5_thin.yaml --real-config configs/real_m7_5.yaml`
+
+## WP7 Phase 4 — Ablation (rows 1, 2, 3, 6)
+
+- Budget: trains `40×100` + `val_dsm_loss`; bench `K=20` / `steps=50`,
+  protocols MCAR 30% + block 8, seed mask=0/sample=1. Skip rows 4, 5, 7.
+- Configs under `configs/ablation/`; assemble with
+  `python scripts/assemble_m7_5_ablation.py` → `artifacts/m7_5/ablation.csv`.
+- Row 6 re-benched under the same cheap knobs (not the full thin claim table).
+- Done (~29 min benches). TimeFill MAE (raw):
+
+  | row | MCAR 30% | block 8 |
+  |-----|----------|---------|
+  | 1 M2 legacy | 40.05 | 66.68 |
+  | 2 WP1 short | 68.57 | 104.32 |
+  | 3 WP1+WP2 short | 53.99 | 66.42 |
+  | 6 full M7.5 | **27.14** | **42.78** |
+
+  Linear on the same knobs: MCAR ≈37 / block ≈68. Short rows 2–3 are
+  undertrained vs full M2/M7.5; do not treat as WP1/WP2 effect sizes.
+
+## WP7 Phase 5 — Docs / claims
+
+- `docs/m7_5_results.md` (checklist + thin table + ablation + M8 hand-off).
+- `docs/EVAL.md` § M7.5; README Evidence → M7.5 (M3 tables untouched).
+- Honesty pass: pass (1 seed), exit #3 open, mean/median MAE footnote,
+  RMSE as clean M3 compare, log1p baseline edge note, WP2 clip/grad on
+  matched short budget, explicit `--real-config` pairings in Reproduce.
 
 ## WP8 — Adapt honesty + M7.5 flag opt-in
 

@@ -32,14 +32,23 @@ if str(_REPO_ROOT) not in sys.path:
 from src.data.normalize import FeatureScaler
 from src.data.real_config import load_real_m2_config
 from src.eval.m3_benchmark import (
+    BenchmarkComparisonPlotter,
     DataBundle,
     ImputeContextRequest,
+    M3ArtifactPaths,
     M3BenchmarkRunner,
     RunGrid,
     SeedPair,
     SplitLoadRequest,
     build_protocol_grid,
     load_split_window_bundle,
+)
+from src.eval.m3_table import (
+    MetricRecord,
+    MetricsTableAssembler,
+    aggregate_seed_metric_rows,
+    write_metrics_summary_csv,
+    write_per_feature_csv,
 )
 from src.sample.reverse_sde import resolve_sample_t_eps
 from src.train.artifacts import load_checkpoint_with_config
@@ -570,31 +579,12 @@ def _as_seed_tuple(raw: Any) -> tuple[int, ...]:
     return values
 
 
-def require_single_seed_run(plan: BenchM3Plan) -> None:
-    """Refuse multi-seed plans until the seed-grid run loop exists.
-
-    Parameters
-    ----------
-    plan : BenchM3Plan
-        Resolved bench plan.
-
-    Raises
-    ------
-    NotImplementedError
-        When ``len(plan.seed_pairs) > 1`` (would silently use the first pair).
-    """
-    n_pairs = len(plan.seed_pairs)
-    if n_pairs > 1:
-        # shortcut: Phase 3 loops seed_pairs; until then refuse list seeds.
-        raise NotImplementedError(
-            "seed-grid run loop not wired yet; "
-            f"got {n_pairs} seed pairs. Use scalar seeds.mask / "
-            "seeds.sample (see bench_m3.yaml)."
-        )
-
-
 def main(argv: list[str] | None = None) -> list[dict]:
-    """CLI entry: run M3 benchmark and return row dicts.
+    """CLI entry: run M3 / M7.5 benchmark and return raw row dicts.
+
+    Loops ``plan.seed_pairs`` (length 1 for scalar M3 seeds). Writes raw
+    ``metrics_by_rate.*``, seed-averaged ``metrics_summary.csv``,
+    ``per_feature.csv``, and one comparison panel (prefers mask=0, sample=1).
 
     Parameters
     ----------
@@ -604,21 +594,83 @@ def main(argv: list[str] | None = None) -> list[dict]:
     Returns
     -------
     list of dict
-        Long-form metric rows as dicts.
+        Long-form metric rows as dicts (all seed pairs).
     """
     args = parse_args(argv)
     loader = BenchM3ConfigLoader(_REPO_ROOT)
     plan = loader.resolve(loader.load(args.config), smoke=bool(args.smoke))
-    require_single_seed_run(plan)
-    print(plan.describe())
+    print(
+        f"{plan.describe()}; seed_pairs={len(plan.seed_pairs)}"
+    )
     data = load_data_bundle(plan)
     context = load_impute_context(plan, args.real_config)
-    runner = M3BenchmarkRunner(data, context, plan.to_run_grid())
-    rows = runner.run()
-    print(f"Wrote {runner.paths.metrics_csv()}")
-    print(f"Wrote {runner.paths.metrics_json()}")
-    print(f"Wrote {runner.paths.comparison_panel()}")
+    rows, features, panel_view = _run_seed_grid(plan, data, context)
+    paths = M3ArtifactPaths(plan.paths.artifact_dir)
+    paths.ensure()
+    assembler = MetricsTableAssembler()
+    for row in rows:
+        assembler.append(row)
+    assembler.write_csv(paths.metrics_csv())
+    assembler.write_json(paths.metrics_json())
+    write_per_feature_csv(paths.per_feature_csv(), features)
+    write_metrics_summary_csv(
+        paths.metrics_summary_csv(),
+        aggregate_seed_metric_rows(rows),
+    )
+    if panel_view is not None:
+        BenchmarkComparisonPlotter().save(
+            panel_view,
+            paths.comparison_panel(),
+        )
+    print(f"Wrote {paths.metrics_csv()}")
+    print(f"Wrote {paths.metrics_json()}")
+    print(f"Wrote {paths.metrics_summary_csv()}")
+    print(f"Wrote {paths.per_feature_csv()}")
+    print(f"Wrote {paths.comparison_panel()}")
     return [row.as_dict() for row in rows]
+
+
+def _run_seed_grid(
+        plan: BenchM3Plan,
+        data: DataBundle,
+        context,
+) -> tuple[
+    list[MetricRecord],
+    list[dict[str, float | int | str]],
+    object | None,
+]:
+    """Collect metrics for every seed pair; panel from mask=0,sample=1."""
+    base = plan.to_run_grid()
+    preferred = SeedPair(mask=0, sample=1)
+    all_rows: list[MetricRecord] = []
+    all_features: list[dict[str, float | int | str]] = []
+    panel_view = None
+    panel_locked = False
+    for pair in plan.seed_pairs:
+        grid = RunGrid(
+            protocols=base.protocols,
+            methods=base.methods,
+            seeds=pair,
+            k_samples=base.k_samples,
+            artifact_dir=base.artifact_dir,
+            point_estimate=base.point_estimate,
+        )
+        print(f"seed_pair mask={pair.mask} sample={pair.sample}")
+        rows, features, view = M3BenchmarkRunner(
+            data,
+            context,
+            grid,
+        ).collect()
+        all_rows.extend(rows)
+        all_features.extend(features)
+        if view is None:
+            continue
+        if pair == preferred:
+            panel_view = view
+            panel_locked = True
+        elif not panel_locked and panel_view is None:
+            panel_view = view
+    return all_rows, all_features, panel_view
 
 
 if __name__ == "__main__":

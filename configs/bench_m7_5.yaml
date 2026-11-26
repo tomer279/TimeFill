@@ -1,7 +1,6 @@
-# Milestone 7.5 benchmark (WP7). Checkpoint under artifacts/m7_5/train/.
-# Seed lists expand to a 3×3 Cartesian grid (Phase 3 run loop). Until that
-# loop lands, run_m3_benchmark refuses len(seed_pairs) > 1. block.extra_lens
-# are extension rows (not the frozen M3 grid).
+# Milestone 7.5 benchmark (WP7 Phase 3). Checkpoint under artifacts/m7_5/train/.
+# Seed lists expand to a 3×3 Cartesian grid; writes metrics_by_rate.* (raw)
+# plus metrics_summary.csv (mean±std). block.extra_lens = extension rows.
 # Use --real-config configs/real_m7_5.yaml.
 
 data:
@@ -49,7 +48,9 @@ baselines:
   point_metrics: degenerate_k1
   point_k: 1
 
-artifact_dir: artifacts/m7_5/bench
+# Separate from thin claim dir (artifacts/m7_5/bench/) so a grid rerun cannot
+# overwrite files cited in docs/m7_5_results.md.
+artifact_dir: artifacts/m7_5/bench_grid
 
 smoke:
   max_windows: null

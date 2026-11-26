@@ -1,0 +1,54 @@
+# Ablation row 2: WP1 clean conditioning only (legacy net / score / no log1p).
+# Short budget — document in walkthrough; not a claim-quality train.
+#   python scripts/train_m2_real.py --config configs/ablation/real_wp1.yaml
+
+data:
+  dataset_name: beijing_multisite_air_quality
+  raw_dir: data/raw/beijing_multisite
+  processed_dir: data/processed/m2
+  raw_glob: "*.csv"
+  seq_len: 64
+  stride: 64
+  n_features: 6
+  feature_names: [PM2.5, PM10, SO2, NO2, CO, O3]
+  mask_rate: 0.3
+  block_len: 8
+  batch_size: 32
+  split_mode: entity
+  split_seed: 0
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+  scaler_filename: feature_scaler.npz
+
+sde:
+  beta_min: 0.1
+  beta_max: 20.0
+  T_diff: 1.0
+
+train:
+  lr: 0.0003
+  epochs: 40
+  weight_decay: 0.0001
+  seed: 0
+  t_eps: 1.0e-5
+  obs_loss_weight: 0.0
+  steps_per_epoch: 100
+  val_every: 5
+  log_every: 1
+  grad_clip_norm: 1.0
+  mask_mode: mixed
+  parameterization: score
+  observed_input: clean
+  select_by: val_dsm_loss
+  artifact_dir: artifacts/m7_5/ablation/wp1
+  snapshot_k_samples: 2
+  snapshot_solver_steps: 10
+  sensitivity_mask_rates: null
+
+sample:
+  K_samples: 20
+  solver_steps: 50
+  observed_mode: frozen_clean
+  diffusion_impl: diagonal
+  point_estimate: median

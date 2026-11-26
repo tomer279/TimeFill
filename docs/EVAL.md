@@ -294,6 +294,27 @@ coverage on **artificial gaps** on a **held-out window split of that upload**
   **not** overwrite `artifacts/m2/checkpoints/*`.
 - Exact Beijing pretrained demo (M4 / M2 weights) remains a separate path.
 
+## M7.5 re-benchmark (does not rewrite M3 tables)
+
+Post-v1 **M7.5** trains `configs/real_m7_5.yaml` and reports under
+`artifacts/m7_5/`. Claim write-up: `docs/m7_5_results.md`.
+
+- **Does not** replace or edit `artifacts/m3/` or `docs/m3_failure_notes.md`.
+- Same Beijing `F=6` schema, test split, and MCAR 10/30/50% + block 8 grid as
+  M3; block 16 is an **extension** row only.
+- Thin claim bench (`configs/bench_m7_5_thin.yaml`): one seed pair
+  (`mask=0`, `sample=1`), `K_samples=50`, `solver_steps=100`,
+  `point_estimate=median`. Not a seed-averaged (±std) table.
+  `metrics_summary.csv` there has `n_seeds=1`; `*_std` columns are 0.0
+  meaning **not measured**, not zero variance. Multi-seed runs use
+  `configs/bench_m7_5.yaml` → `artifacts/m7_5/bench_grid/`.
+- **Exit criterion 3 unmet:** no ≥3 mask-seed mean ± std claim table; WP7
+  closed as thin / single-seed only (`docs/m7_5_results.md`).
+- Ablation (`artifacts/m7_5/ablation.csv`): rows 1, 2, 3, 6 only; short-train
+  MAE rows are not WP effect-size evidence; WP2 train-hygiene (clip/grad)
+  on the matched short budget is the fair row-2→3 compare.
+- README Evidence may cite M7.5 numbers only from `docs/m7_5_results.md`.
+
 ## Out of scope here
 
 - Implementing the benchmark runner and baseline code (later M3 work packages;

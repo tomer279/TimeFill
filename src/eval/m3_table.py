@@ -19,6 +19,10 @@ Functions
 ---------
 format_csv_cell
     Format one CSV cell (``None`` → empty string).
+aggregate_seed_metric_rows
+    Mean ± std over seed pairs for method × protocol rows.
+write_metrics_summary_csv
+    Write the seed-averaged summary table.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +70,22 @@ _PER_FEATURE_FIELDS = (
     "coverage_50",
     "coverage_90",
     "n_target_cells",
+    "mask_seed",
+    "sample_seed",
+)
+_SCORE_KEYS = (
+    "mae",
+    "rmse",
+    "crps",
+    "coverage_50",
+    "coverage_90",
+)
+_NORM_SCORE_KEYS = (
+    "mae_norm",
+    "rmse_norm",
+    "crps_norm",
+    "coverage_50_norm",
+    "coverage_90_norm",
 )
 _NAN = float("nan")
 
@@ -449,6 +470,101 @@ def format_csv_cell(value: float | int | str | bool | None) -> str:
     return str(value)
 
 
+def aggregate_seed_metric_rows(
+        rows: list[MetricRecord],
+) -> list[dict[str, float | int | str | None]]:
+    """Average metrics over seed pairs for each method × protocol.
+
+    Parameters
+    ----------
+    rows : list of MetricRecord
+        Raw long-form rows (one per seed pair).
+
+    Returns
+    -------
+    list of dict
+        One summary row per method × protocol with ``*_mean`` / ``*_std``
+        and ``n_seeds``.
+    """
+    groups: dict[
+        tuple[str, str, float | None, int | None],
+        list[MetricRecord],
+    ] = {}
+    for row in rows:
+        key = (
+            row.method,
+            row.protocol.name,
+            row.protocol.mask_rate,
+            row.protocol.block_len,
+        )
+        groups.setdefault(key, []).append(row)
+    summaries: list[dict[str, float | int | str | None]] = []
+    for (method, protocol, mask_rate, block_len), group in groups.items():
+        summary: dict[str, float | int | str | None] = {
+            "method": method,
+            "protocol": protocol,
+            "mask_rate": mask_rate,
+            "block_len": block_len,
+            "n_seeds": len(group),
+        }
+        flat = [record.as_dict() for record in group]
+        for name in _SCORE_KEYS + _NORM_SCORE_KEYS:
+            values = [float(item[name]) for item in flat]
+            summary[f"{name}_mean"] = float(statistics.fmean(values))
+            summary[f"{name}_std"] = _seed_std(values)
+        summaries.append(summary)
+    return summaries
+
+
+def write_metrics_summary_csv(
+        path: Path,
+        rows: list[dict[str, float | int | str | None]],
+) -> Path:
+    """Write seed-averaged ``metrics_summary.csv``.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination CSV path.
+    rows : list of dict
+        Output of ``aggregate_seed_metric_rows``.
+
+    Returns
+    -------
+    pathlib.Path
+        Path written.
+    """
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "method",
+        "protocol",
+        "mask_rate",
+        "block_len",
+        "n_seeds",
+    ]
+    for name in _SCORE_KEYS + _NORM_SCORE_KEYS:
+        fields.append(f"{name}_mean")
+        fields.append(f"{name}_std")
+    with out.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(fields)
+        for row in rows:
+            writer.writerow(
+                [format_csv_cell(row.get(name)) for name in fields]
+            )
+    return out
+
+
+def _seed_std(values: list[float]) -> float:
+    """Sample std for ``n>=2``, else ``0.0``."""
+    if len(values) < 2:
+        return 0.0
+    mean = statistics.fmean(values)
+    var = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return float(math.sqrt(var))
+
+
 def write_per_feature_csv(
         path: Path,
         rows: list[dict[str, float | int | str]],
@@ -494,6 +610,8 @@ __all__ = [
     "MetricRecord",
     "MetricsTableAssembler",
     "ProtocolKey",
+    "aggregate_seed_metric_rows",
+    "write_metrics_summary_csv",
     "write_per_feature_csv",
     "RunMeta",
     "ScoreBlock",

@@ -56,6 +56,8 @@ a PhysioNet run** (Beijing air-quality path; see `docs/EVAL.md`).
 - **Toy + real train path** — synthetic M1; UCI Beijing M2 (`F=6`, `T=64`)
 - **Evidence (M3)** — TimeFill vs LOCF / linear; see **Evidence** below and
   `docs/m3_failure_notes.md`
+- **Evidence (M7.5)** — improved Beijing stack (thin single-seed); see
+  **Evidence → M7.5** and `docs/m7_5_results.md` (M3 tables unchanged)
 - **Demo (M4)** — see **Clone → demo** (local M2 checkpoint + Streamlit)
 - **Metrics reproduce** — see **Clone → metrics** (optional full M3 table)
 - **Contracts** — `ASSUMPTIONS.md` (incl. Milestone 5 portfolio rules),
@@ -106,10 +108,10 @@ linear only** — no claim vs CSDI / BRITS / Transformer.
 
 Full table + claim checklist: [`docs/m3_failure_notes.md`](docs/m3_failure_notes.md).
 
-**Summary:** TimeFill is the better **probabilistic** imputer vs LOCF / linear
-(CRPS and coverage on all four protocols). Point MAE is competitive and wins
-on long/block gaps; it does **not** dominate linear on easy short-gap MCAR
-(MAE trails linear at MCAR 10%: 35.01 vs 33.02; MCAR 30%: 39.01 vs 37.45).
+**Summary (M3):** TimeFill is the better **probabilistic** imputer vs LOCF /
+linear (CRPS and coverage on all four protocols). Point MAE is competitive and
+wins on long/block gaps; it does **not** dominate linear on easy short-gap
+MCAR (MAE trails linear at MCAR 10%: 35.01 vs 33.02; MCAR 30%: 39.01 vs 37.45).
 
 **Qualitative figure:** optional git-friendly copy under `docs/figures/`
 (not committed in v1). After a local M3 run, the panel is at
@@ -117,6 +119,34 @@ on long/block gaps; it does **not** dominate linear on easy short-gap MCAR
 original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
 `docs/figures/m3_comparison_panel.png` and embed it here with caption
 “held-out gaps, original units.” Do not commit large `artifacts/` dumps.
+
+### M7.5 (post-v1 stack; M3 tables unchanged)
+
+**Source of truth:** [`docs/m7_5_results.md`](docs/m7_5_results.md)
+(`artifacts/m7_5/bench/metrics_by_rate.csv`). Thin claim: **one** seed
+(`mask=0`, `sample=1`); not seed-averaged. Same LOCF / linear scope.
+
+| method | protocol | rate / block | mae | rmse | crps | coverage_90 |
+|---|---|---|---:|---:|---:|---:|
+| timefill | mcar | 0.10 | 22.96 | 97.03 | 17.12 | 0.885 |
+| linear | mcar | 0.10 | 32.46 | 142.99 | 32.46 | 0.102 |
+| timefill | mcar | 0.30 | 26.04 | 110.89 | 19.42 | 0.899 |
+| linear | mcar | 0.30 | 36.80 | 163.90 | 36.80 | 0.089 |
+| timefill | mcar | 0.50 | 32.41 | 131.93 | 24.12 | 0.912 |
+| linear | mcar | 0.50 | 44.67 | 190.71 | 44.67 | 0.075 |
+| timefill | block | 8 | 41.79 | 164.31 | 30.62 | 0.878 |
+| linear | block | 8 | 68.39 | 253.83 | 68.39 | 0.042 |
+| timefill | block | 16 | 51.81 | 193.85 | 38.18 | 0.874 |
+| linear | block | 16 | 89.02 | 320.07 | 89.02 | 0.034 |
+
+**Summary (M7.5 thin):** TimeFill beats linear on MAE and CRPS for every
+protocol above (incl. easy MCAR). coverage_90 stays in ~0.87–0.91. vs M3
+TimeFill on the same seed, **RMSE** (159.7→97.0 at MCAR 10%) and **CRPS**
+improve on all shared protocols — those are like-for-like. MAE also drops,
+but M3 used posterior **mean** and M7.5 uses **median**; see
+`docs/m7_5_results.md`. Linear rows can differ slightly from M3 because
+log1p edge means use `expm1(mean of logs)`. Exit criterion 3 (≥3 mask
+seeds) is **not** met. Ablation / full caveats: `docs/m7_5_results.md`.
 
 ## Limitations
 
@@ -126,8 +156,9 @@ original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
   not run for v1.
 - **Baselines = LOCF / linear:** stronger baseline (e.g. CSDI) deferred; do
   not read this table as a win vs those methods.
-- **MAE shortfall on easy MCAR:** still ~2 points behind linear at MCAR 10%
-  and 30%; CRPS / coverage remain the intended differentiators.
+- **MAE shortfall on easy MCAR (M3):** ~2 points behind linear at MCAR 10%
+  and 30% on the v1 table; **M7.5 thin** closes that gap on the same seed
+  (see Evidence → M7.5). Still single-seed — not ±std.
 - **Streamlit ≠ M3 report settings:** app defaults `K_samples=8`,
   `solver_steps=20` (and ≤4 windows); M3 report uses `50` / `100`
   (`configs/bench_m3.yaml` vs `configs/app_m4.yaml`).
@@ -480,6 +511,9 @@ Config: `configs/app_m4.yaml`. Full benchmark tables: **Clone → metrics**.
 - [`docs/milestone_5_walkthrough.md`](docs/milestone_5_walkthrough.md)
 - [`docs/milestone_6_walkthrough.md`](docs/milestone_6_walkthrough.md)
 - [`docs/milestone_7_walkthrough.md`](docs/milestone_7_walkthrough.md)
+- [`docs/milestone_7_5_walkthrough.md`](docs/milestone_7_5_walkthrough.md)
+- [`docs/m7_5_results.md`](docs/m7_5_results.md) — M7.5 claim checklist / M8 hand-off
+- [`docs/m3_failure_notes.md`](docs/m3_failure_notes.md) — v1 M3 claim checklist
 
 ## Future work
 

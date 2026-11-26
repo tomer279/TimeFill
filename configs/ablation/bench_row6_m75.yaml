@@ -1,0 +1,42 @@
+# Ablation row 6: full M7.5 checkpoint (same cheap knobs as other rows).
+#   python -u scripts/run_m3_benchmark.py --config configs/ablation/bench_row6_m75.yaml \
+#     --real-config configs/real_m7_5.yaml
+data:
+  processed_dir: data/processed/m2
+  checkpoint: artifacts/m7_5/train/checkpoints/best_score_net.eqx
+  scaler: artifacts/m7_5/train/checkpoints/feature_scaler.npz
+  split: test
+  n_features: 6
+  feature_names: [PM2.5, PM10, SO2, NO2, CO, O3]
+  seq_len: 64
+
+protocols:
+  mcar_rates: [0.30]
+  block:
+    enabled: true
+    block_len: 8
+
+sample:
+  K_samples: 20
+  solver_steps: 50
+  diffusion_impl: diagonal
+  point_estimate: median
+
+seeds:
+  mask: 0
+  sample: 1
+
+methods: [timefill, locf, linear]
+
+baselines:
+  edge_policy: train_feature_mean
+  point_metrics: degenerate_k1
+  point_k: 1
+
+artifact_dir: artifacts/m7_5/ablation/bench_row6_m75
+
+smoke:
+  max_windows: null
+  K_samples: 2
+  solver_steps: 10
+  split: val

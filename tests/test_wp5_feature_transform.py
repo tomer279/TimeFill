@@ -361,7 +361,11 @@ def test_per_feature_rows_uses_names_and_differing_metrics() -> None:
     runner.grid = type(
         "Grid",
         (),
-        {"methods": ("timefill",), "point_estimate": "mean"},
+        {
+            "methods": ("timefill",),
+            "point_estimate": "mean",
+            "seeds": SeedPair(mask=0, sample=1),
+        },
     )()
     pack = MethodScoreInput(
         truth=tensors.truth,

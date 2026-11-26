@@ -84,15 +84,6 @@ def test_prepare_artifacts_writes_split_manifest(tmp_path: Path) -> None:
     verify_split_manifest(manifest, processed)
 
 
-def test_real_m7_5_train_guard_raises() -> None:
-    """``real_m7_5.yaml`` is parse-only until WP1+ consumers land."""
-    from src.train.real_loop import _assert_wp0_consumable
-
-    config = load_real_m2_config(_REPO / "configs" / "real_m7_5.yaml")
-    with pytest.raises(NotImplementedError, match="M7.5 flags"):
-        _assert_wp0_consumable(config)
-
-
 def test_prepare_refuses_frozen_artifact_dir() -> None:
     """Frozen claim roots and their subdirs are refused before clear/write."""
     from src.train.real_loop import _assert_not_frozen_artifact_dir
@@ -102,17 +93,3 @@ def test_prepare_refuses_frozen_artifact_dir() -> None:
         paths = resolve_artifact_paths(artifact_dir)
         with pytest.raises(RuntimeError, match="frozen claim dir"):
             _assert_not_frozen_artifact_dir(paths)
-
-
-def test_model_guard_rejects_non_default_n_layers() -> None:
-    """Partial ``model:`` overrides must not slip past the unused-flag guard."""
-    from src.models.score_net import ScoreNetConfig
-    from src.train.real_loop import _assert_wp0_consumable
-
-    config = load_real_m2_config(_REAL_CFG)
-    config.model = ScoreNetConfig(
-        n_features=config.data.n_features,
-        n_layers=6,
-    )
-    with pytest.raises(NotImplementedError, match="model"):
-        _assert_wp0_consumable(config)

@@ -56,7 +56,7 @@ a PhysioNet run** (Beijing air-quality path; see `docs/EVAL.md`).
 - **Toy + real train path** — synthetic M1; UCI Beijing M2 (`F=6`, `T=64`)
 - **Evidence (M3)** — TimeFill vs LOCF / linear; see **Evidence** below and
   `docs/m3_failure_notes.md`
-- **Evidence (M7.5)** — improved Beijing stack (thin single-seed); see
+- **Evidence (M7.5)** — improved Beijing stack (3×3 seed mean ± std); see
   **Evidence → M7.5** and `docs/m7_5_results.md` (M3 tables unchanged)
 - **Demo (M4)** — see **Clone → demo** (local M2 checkpoint + Streamlit)
 - **Metrics reproduce** — see **Clone → metrics** (optional full M3 table)
@@ -123,30 +123,30 @@ original units; see Panels in `docs/m3_failure_notes.md`). Copy that file to
 ### M7.5 (post-v1 stack; M3 tables unchanged)
 
 **Source of truth:** [`docs/m7_5_results.md`](docs/m7_5_results.md)
-(`artifacts/m7_5/bench/metrics_by_rate.csv`). Thin claim: **one** seed
-(`mask=0`, `sample=1`); not seed-averaged. Same LOCF / linear scope.
+(`artifacts/m7_5/bench_grid/metrics_summary.csv`). Seed-averaged over **9**
+pairs (`mask ∈ {0,1,2}` × `sample ∈ {1,2,3}`); cells are mean ± std.
+Same LOCF / linear scope.
 
 | method | protocol | rate / block | mae | rmse | crps | coverage_90 |
 |---|---|---|---:|---:|---:|---:|
-| timefill | mcar | 0.10 | 22.96 | 97.03 | 17.12 | 0.885 |
-| linear | mcar | 0.10 | 32.46 | 142.99 | 32.46 | 0.102 |
-| timefill | mcar | 0.30 | 26.04 | 110.89 | 19.42 | 0.899 |
-| linear | mcar | 0.30 | 36.80 | 163.90 | 36.80 | 0.089 |
-| timefill | mcar | 0.50 | 32.41 | 131.93 | 24.12 | 0.912 |
-| linear | mcar | 0.50 | 44.67 | 190.71 | 44.67 | 0.075 |
-| timefill | block | 8 | 41.79 | 164.31 | 30.62 | 0.878 |
-| linear | block | 8 | 68.39 | 253.83 | 68.39 | 0.042 |
-| timefill | block | 16 | 51.81 | 193.85 | 38.18 | 0.874 |
-| linear | block | 16 | 89.02 | 320.07 | 89.02 | 0.034 |
+| timefill | mcar | 0.10 | 22.86±0.14 | 98.71±2.43 | 17.08±0.06 | 0.884±0.001 |
+| linear | mcar | 0.10 | 32.03±0.41 | 150.53±9.02 | 32.03±0.41 | 0.099±0.002 |
+| timefill | mcar | 0.30 | 26.58±0.41 | 116.03±3.71 | 19.83±0.29 | 0.898±0.001 |
+| linear | mcar | 0.30 | 37.15±0.43 | 168.88±3.79 | 37.15±0.43 | 0.089±0.001 |
+| timefill | mcar | 0.50 | 33.03±0.47 | 139.05±6.76 | 24.59±0.39 | 0.911±0.001 |
+| linear | mcar | 0.50 | 45.12±0.37 | 197.55±6.76 | 45.12±0.37 | 0.075±0.000 |
+| timefill | block | 8 | 41.22±0.98 | 167.27±7.86 | 30.34±0.64 | 0.876±0.002 |
+| linear | block | 8 | 66.54±1.45 | 245.77±6.10 | 66.54±1.45 | 0.043±0.001 |
+| timefill | block | 16 | 50.85±0.89 | 185.71±6.81 | 37.25±0.81 | 0.875±0.001 |
+| linear | block | 16 | 86.83±1.65 | 304.35±13.07 | 86.83±1.65 | 0.035±0.001 |
 
-**Summary (M7.5 thin):** TimeFill beats linear on MAE and CRPS for every
-protocol above (incl. easy MCAR). coverage_90 stays in ~0.87–0.91. vs M3
-TimeFill on the same seed, **RMSE** (159.7→97.0 at MCAR 10%) and **CRPS**
-improve on all shared protocols — those are like-for-like. MAE also drops,
-but M3 used posterior **mean** and M7.5 uses **median**; see
+**Summary (M7.5):** TimeFill beats linear on MAE and CRPS for every protocol
+above (incl. easy MCAR). coverage_90 stays in ~0.87–0.91. vs M3 TimeFill,
+**RMSE** and **CRPS** improve on all shared protocols (like-for-like). MAE
+also drops, but M3 used posterior **mean** and M7.5 uses **median**; see
 `docs/m7_5_results.md`. Linear rows can differ slightly from M3 because
-log1p edge means use `expm1(mean of logs)`. Exit criterion 3 (≥3 mask
-seeds) is **not** met. Ablation / full caveats: `docs/m7_5_results.md`.
+log1p edge means use `expm1(mean of logs)`. Exit criterion 3 is **met**.
+Ablation / full caveats: `docs/m7_5_results.md`.
 
 ## Limitations
 
@@ -157,8 +157,8 @@ seeds) is **not** met. Ablation / full caveats: `docs/m7_5_results.md`.
 - **Baselines = LOCF / linear:** stronger baseline (e.g. CSDI) deferred; do
   not read this table as a win vs those methods.
 - **MAE shortfall on easy MCAR (M3):** ~2 points behind linear at MCAR 10%
-  and 30% on the v1 table; **M7.5 thin** closes that gap on the same seed
-  (see Evidence → M7.5). Still single-seed — not ±std.
+  and 30% on the v1 table; **M7.5** closes that gap on the seed-averaged
+  claim table (see Evidence → M7.5).
 - **Streamlit ≠ M3 report settings:** app defaults `K_samples=8`,
   `solver_steps=20` (and ≤4 windows); M3 report uses `50` / `100`
   (`configs/bench_m3.yaml` vs `configs/app_m4.yaml`).

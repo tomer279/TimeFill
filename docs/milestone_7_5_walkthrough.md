@@ -17,13 +17,13 @@
   `train_meta`: selected_epoch=180, clipped_step_fraction=0.0,
   median_grad_norm≈0.23, params=172550, RF=129.
 - Phase 3: `main()` loops `seed_pairs`; raw `metrics_by_rate.*` +
-  `metrics_summary.csv` (mean±std when n_seeds≥2; thin has n_seeds=1 so
-  std cells are 0.0 = not measured); panel prefers mask=0,sample=1.
+  `metrics_summary.csv` (mean±std); panel prefers mask=0,sample=1.
   Bench runner caches one `filter_jit` impute path (stops Diffrax
-  recompile-per-protocol). Full 3×3 aborted after ~21h; thin rerun is
-  `configs/bench_m7_5_thin.yaml` (mask=0, sample=1 only).
+  recompile-per-protocol). First 3×3 attempt aborted (~21h, pre-JIT);
+  thin smoke → `artifacts/m7_5/bench/`; completed 3×3 (~33 h) →
+  `artifacts/m7_5/bench_grid/` (`n_seeds=9`). Claim docs use the grid.
 - Commands:
-  `python -u scripts/run_m3_benchmark.py --config configs/bench_m7_5_thin.yaml --real-config configs/real_m7_5.yaml`
+  `python -u scripts/run_m3_benchmark.py --config configs/bench_m7_5.yaml --real-config configs/real_m7_5.yaml`
 
 ## WP7 Phase 4 — Ablation (rows 1, 2, 3, 6)
 
@@ -46,11 +46,12 @@
 
 ## WP7 Phase 5 — Docs / claims
 
-- `docs/m7_5_results.md` (checklist + thin table + ablation + M8 hand-off).
+- `docs/m7_5_results.md` (seed-averaged checklist + grid table + ablation +
+  M8 hand-off with TF/linear MAE margins).
 - `docs/EVAL.md` § M7.5; README Evidence → M7.5 (M3 tables untouched).
-- Honesty pass: pass (1 seed), exit #3 open, mean/median MAE footnote,
-  RMSE as clean M3 compare, log1p baseline edge note, WP2 clip/grad on
-  matched short budget, explicit `--real-config` pairings in Reproduce.
+- Exit criterion 3 **closed** (2026-11-27) from `bench_grid/` n_seeds=9.
+  Mean/median MAE footnote, RMSE as clean M3 compare, log1p baseline edge
+  note, WP2 clip/grad on matched short budget kept.
 
 ## WP8 — Adapt honesty + M7.5 flag opt-in
 

@@ -302,14 +302,14 @@ Post-v1 **M7.5** trains `configs/real_m7_5.yaml` and reports under
 - **Does not** replace or edit `artifacts/m3/` or `docs/m3_failure_notes.md`.
 - Same Beijing `F=6` schema, test split, and MCAR 10/30/50% + block 8 grid as
   M3; block 16 is an **extension** row only.
-- Thin claim bench (`configs/bench_m7_5_thin.yaml`): one seed pair
-  (`mask=0`, `sample=1`), `K_samples=50`, `solver_steps=100`,
-  `point_estimate=median`. Not a seed-averaged (±std) table.
-  `metrics_summary.csv` there has `n_seeds=1`; `*_std` columns are 0.0
-  meaning **not measured**, not zero variance. Multi-seed runs use
-  `configs/bench_m7_5.yaml` → `artifacts/m7_5/bench_grid/`.
-- **Exit criterion 3 unmet:** no ≥3 mask-seed mean ± std claim table; WP7
-  closed as thin / single-seed only (`docs/m7_5_results.md`).
+- Claim bench: `configs/bench_m7_5.yaml` → `artifacts/m7_5/bench_grid/`
+  (3×3 seed pairs, `K_samples=50`, `solver_steps=100`,
+  `point_estimate=median`). Source of truth for mean ± std:
+  `metrics_summary.csv` (`n_seeds=9`).
+- Thin single-seed smoke: `configs/bench_m7_5_thin.yaml` →
+  `artifacts/m7_5/bench/` (historical; does not overwrite `bench_grid/`).
+- **Exit criterion 3 met** (2026-11-27): ≥3 mask seeds with mean ± std
+  (`docs/m7_5_results.md`).
 - Ablation (`artifacts/m7_5/ablation.csv`): rows 1, 2, 3, 6 only; short-train
   MAE rows are not WP effect-size evidence; WP2 train-hygiene (clip/grad)
   on the matched short budget is the fair row-2→3 compare.

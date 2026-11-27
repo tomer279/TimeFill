@@ -406,13 +406,13 @@ Every new key gets a `validate()` check and a row in `ASSUMPTIONS.md`
   derived from this table.
 - **Done when:** the tables exist, each claim is marked pass/fail honestly,
   and the M8 hand-off table is written.
-- **Done (2026-11-26):** Closed on **thin, single-seed** claims
-  (`configs/bench_m7_5_thin.yaml` → `artifacts/m7_5/bench/`; ablation rows
-  1/2/3/6; `docs/m7_5_results.md` + EVAL § M7.5 + README Evidence). WP7
-  Done-when met. **Milestone exit criterion 3 still open** (≥3 mask seeds,
-  mean ± std). Full-grid config writes to `artifacts/m7_5/bench_grid/` so it
-  cannot overwrite the cited thin folder. Deferred: multi-seed rerun,
-  full-budget ablation, sidecar param refuse, per_feature protocol cols.
+- **Done (2026-11-26 / 2026-11-27):** WP7 Done-when met on thin claims first;
+  then **exit criterion 3 closed** with the 3×3 grid
+  (`configs/bench_m7_5.yaml` → `artifacts/m7_5/bench_grid/`, ~33 h CPU,
+  `n_seeds=9` mean ± std). Claim docs cite the grid; thin folder kept as
+  historical. Ablation rows 1/2/3/6 unchanged. Deferred: full-budget
+  ablation, sidecar param refuse, per_feature protocol cols, NaN std when
+  n_seeds < 2.
 
 ### WP8 — Housekeeping and honesty fixes (findings 13, 14, cleanup)
 - Delete `src/data/Untitled-1.py` (move it to `notebooks/scratch/` if it is
